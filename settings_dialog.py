@@ -79,6 +79,7 @@ DEFAULT_CONFIG = {
     "ocr_correction": True,
     "skip_duplicates": True,
     "with_polish": True,
+    "two_pages_per_student": True,
     "extra_requirements": "",
     "essay_title": "",
     "last_folder": ""
@@ -187,6 +188,7 @@ class SettingsDialog(QDialog):
         self.chk_ocr_correction = QCheckBox("执行 OCR 修正阶段（推荐开启，先修正OCR错误再批改）")
         self.chk_skip_duplicates = QCheckBox("避免重复批改（跳过已批改的相同图片）")
         self.chk_polish = QCheckBox("生成精修升格范文（基于原文和批改结果，生成高分升格版）")
+        self.chk_two_pages = QCheckBox("每位学生 DOCX 占满 2 页（不足补空页，方便打印分发）")
 
         grading_layout.addWidget(self.chk_score)
         grading_layout.addWidget(self.chk_comment)
@@ -194,6 +196,7 @@ class SettingsDialog(QDialog):
         grading_layout.addWidget(self.chk_ocr_correction)
         grading_layout.addWidget(self.chk_skip_duplicates)
         grading_layout.addWidget(self.chk_polish)
+        grading_layout.addWidget(self.chk_two_pages)
 
         layout.addWidget(grading_group)
 
@@ -241,6 +244,7 @@ class SettingsDialog(QDialog):
         self.chk_ocr_correction.setChecked(self.config.get("ocr_correction", True))
         self.chk_skip_duplicates.setChecked(self.config.get("skip_duplicates", True))
         self.chk_polish.setChecked(self.config.get("with_polish", True))
+        self.chk_two_pages.setChecked(self.config.get("two_pages_per_student", True))
 
         self.extra_requirements.setPlainText(self.config.get("extra_requirements", ""))
 
@@ -260,6 +264,7 @@ class SettingsDialog(QDialog):
         self.config["ocr_correction"] = self.chk_ocr_correction.isChecked()
         self.config["skip_duplicates"] = self.chk_skip_duplicates.isChecked()
         self.config["with_polish"] = self.chk_polish.isChecked()
+        self.config["two_pages_per_student"] = self.chk_two_pages.isChecked()
 
         self.config["extra_requirements"] = self.extra_requirements.toPlainText().strip()
 

@@ -267,7 +267,8 @@ def _add_learning_section(doc, learning_text: str):
 
 # ==================== 主导出函数 ====================
 
-def export_to_docx(all_results: list, essay_title: str, filepath: str):
+def export_to_docx(all_results: list, essay_title: str, filepath: str,
+                   two_pages_per_student: bool = True):
     """导出批改结果为 DOCX 文件，每位学生一个独立节（含个性化页眉）"""
     doc = Document()
 
@@ -345,5 +346,9 @@ def export_to_docx(all_results: list, essay_title: str, filepath: str):
         # 5. 学习版范文（主题偏离时）
         if learning:
             _add_learning_section(doc, learning)
+
+        # 6. 占满2页（勾选时强制分页）
+        if two_pages_per_student:
+            doc.add_page_break()
 
     doc.save(filepath)

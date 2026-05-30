@@ -115,26 +115,17 @@ class GradedCache:
                 sha.update(chunk)
         return sha.hexdigest()
 
-    def is_duplicate(self, barcode_data: str, student_name: str, filename: str, filepath: str) -> bool:
-        """按考号 > 姓名 > 文件名 优先级匹配已批改记录"""
+    def check_cache(self, filepath: str) -> dict | None:
+        """检查文件是否已批改，返回缓存的批改结果或None"""
         current_sha = self._file_sha256(filepath)
-
-        keys = []
-        if barcode_data:
-            keys.append(barcode_data)
-        if student_name:
-            keys.append(student_name)
-        keys.append(filename)
-
-        for key in keys:
-            entry = self.entries.get(key)
-            if entry and entry.get("sha256") == current_sha:
-                return True
-        return False
+        for entry in self.entries.values():
+            if entry.get("sha256") == current_sha and "result" in entry:
+                return entry["result"]
+        return None
 
     def mark_graded(self, barcode_data: str, student_name: str, student_class: str,
-                    folder: str, filename: str, filepath: str):
-        """标记为已批改，主键: 考号 > 姓名 > 文件名"""
+                    folder: str, filename: str, filepath: str, result: dict):
+        """标记为已批改，主键: 考号 > 姓名 > 文件名，同时存储批改结果"""
         sha = self._file_sha256(filepath)
         key = barcode_data or student_name or filename
 
@@ -143,7 +134,8 @@ class GradedCache:
             "student_name": student_name,
             "student_class": student_class,
             "folder": folder,
-            "filename": filename
+            "filename": filename,
+            "result": result
         }
         self.save()
 
@@ -424,14 +416,22 @@ class GraderWorker(QThread):
 
             self.log_updated.emit(f"[{idx + 1}/{total}] {filename}")
 
-            # ---- 步骤1：条形码扫描 ----
+            # ---- 步骤1：SHA256缓存检查（纯本地，不调API） ----
+            if self.skip_duplicates:
+                cached_result = self.cache.check_cache(image_path)
+                if cached_result is not None:
+                    self.log_updated.emit(f"  - 命中缓存，跳过（得分: {cached_result.get('total_score', 0)}/15）")
+                    self.result_ready.emit(filename, cached_result)
+                    continue
+
+            # ---- 步骤2：条形码扫描 ----
             barcode_data = self._scan_barcode(image_path)
             if barcode_data:
                 self.log_updated.emit(f"  - 条形码识别: {barcode_data}")
             else:
                 self.log_updated.emit("  - 未检测到条形码")
 
-            # ---- 步骤2：OCR识别 ----
+            # ---- 步骤3：OCR识别 ----
             try:
                 self.log_updated.emit("  - OCR识别中...")
                 ocr_result = self._do_ocr(image_path)
@@ -451,14 +451,7 @@ class GraderWorker(QThread):
                 self.result_ready.emit(filename, self._make_error_result(f"OCR识别失败: {str(e)}"))
                 continue
 
-            # ---- 步骤2.5：学生匹配重复检查 ----
-            if self.skip_duplicates and self.cache.is_duplicate(
-                barcode_data, student_name, filename, image_path
-            ):
-                self.log_updated.emit(f"  - 跳过（该学生已批改过相同内容的图片）")
-                continue
-
-            # ---- 步骤3：OCR修正（可选） ----
+            # ---- 步骤4：OCR修正（可选） ----
             if do_ocr_correction:
                 try:
                     self.log_updated.emit("  - DeepSeek OCR修正中...")
@@ -475,7 +468,7 @@ class GraderWorker(QThread):
                 correction_result = {"ocr_corrected_text": ocr_text}
                 self.log_updated.emit("  - 跳过OCR修正阶段")
 
-            # ---- 步骤4：批改评分 ----
+            # ---- 步骤5：批改评分 ----
             try:
                 self.log_updated.emit("  - DeepSeek批改评分中...")
                 grading_result = self._call_grading(text_for_grading)
@@ -490,7 +483,7 @@ class GraderWorker(QThread):
                 self.result_ready.emit(filename, error_result)
                 continue
 
-            # ---- 步骤5：精修升格范文（可选） ----
+            # ---- 步骤6：精修升格范文（可选） ----
             polished_version = ""
             learning_version = ""
             if self.config.get("with_polish", True):
@@ -526,7 +519,7 @@ class GraderWorker(QThread):
             }
             self.result_ready.emit(filename, combined)
             self.cache.mark_graded(barcode_data, student_name, student_class,
-                                   self.image_folder, filename, image_path)
+                                   self.image_folder, filename, image_path, combined)
             time.sleep(0.5)
 
         self.finished.emit()
@@ -904,7 +897,9 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            export_to_docx(self.all_results, self.essay_title.toPlainText(), file_path)
+            config = self._current_config()
+            export_to_docx(self.all_results, self.essay_title.toPlainText(), file_path,
+                           two_pages_per_student=config.get("two_pages_per_student", True))
             QMessageBox.information(self, "成功", f"结果已保存到:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"导出DOCX失败: {str(e)}\n请确认已安装 python-docx")
