@@ -224,10 +224,19 @@ POLISH_SYSTEM_PROMPT = """
 
 
 # ==================== 小模型 OCR 提示词（smolvlm / minicpm-v 等） ====================
-SMOLVLM_OCR_PROMPT = """Recognize the handwritten English text in this image.
-Also look for student name (姓名) and class (班级).
-Return JSON: {"recognized_text": "...", "student_name": "...", "student_class": "..."}
-Do NOT correct grammar or spelling. Only output the JSON, nothing else."""
+SMOLVLM_OCR_SYSTEM = (
+    "You are a handwriting OCR engine. Your only job is to transcribe text from images. "
+    "Never describe, analyze, or comment on the image. Never add your own words. "
+    "Only output what is written in the image, character by character."
+)
+
+SMOLVLM_OCR_USER = (
+    "Transcribe ALL handwritten English text from this image. "
+    "Preserve spelling, grammar, layout, line breaks exactly as written — do NOT correct anything.\n\n"
+    "Also find student name (姓名, in Chinese) and class (班级, e.g. 高一3班).\n\n"
+    'Output ONLY a JSON object. No introduction, no explanation, no markdown:\n'
+    '{"recognized_text": "the full text here", "student_name": "name or empty", "student_class": "class or empty"}'
+)
 
 
 # ==================== Ollama OCR 提示词 ====================
@@ -247,21 +256,19 @@ Return ONLY a JSON object in this exact format:
 }"""
 
 
-def build_ocr_prompt(ocr_method: str = "qwen", model_name: str = "") -> str:
-    """根据OCR方式与模型名自动选择合适的OCR提示词"""
-    # 用户自定义 prompt 优先
+def build_ocr_prompt(ocr_method: str = "qwen", model_name: str = "") -> tuple:
+    """根据OCR方式与模型名自动选择OCR提示词，返回 (system_prompt, user_prompt)"""
     custom = _get_custom_ocr_prompt()
     if custom:
-        return custom
+        return ("", custom)
 
     if ocr_method == "ollama":
         model_lower = model_name.lower()
-        # 小模型用简化 prompt
         small_models = ["smolvlm", "minicpm", "moondream", "llava", "llama"]
         if any(m in model_lower for m in small_models):
-            return SMOLVLM_OCR_PROMPT
-        return OLLAMA_OCR_PROMPT
-    return QWEN_OCR_PROMPT
+            return (SMOLVLM_OCR_SYSTEM, SMOLVLM_OCR_USER)
+        return ("", OLLAMA_OCR_PROMPT)
+    return ("", QWEN_OCR_PROMPT)
 
 
 _OCR_CUSTOM_PROMPT: str = ""
