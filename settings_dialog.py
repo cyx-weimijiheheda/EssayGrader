@@ -11,10 +11,12 @@ import hashlib
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QLineEdit, QTextEdit, QCheckBox,
-    QRadioButton, QButtonGroup, QPushButton,
-    QDialogButtonBox, QMessageBox, QLabel
+    QComboBox, QStackedWidget, QPushButton,
+    QDialogButtonBox, QMessageBox, QLabel, QWidget
 )
 from PySide6.QtCore import Qt
+
+from prompts import set_ocr_custom_prompt
 
 CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(CONFIG_DIR, "essay_grader_config.json")
@@ -73,6 +75,10 @@ DEFAULT_CONFIG = {
     "qwen_model": "qwen-vl-max",
     "qwen_api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "ocr_method": "qwen",
+    "ollama_host": "localhost",
+    "ollama_port": "11434",
+    "ollama_model": "qwen2.5vl:7b",
+    "ocr_custom_prompt": "",
     "with_score": True,
     "with_comment": True,
     "with_correction": True,
@@ -144,37 +150,71 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(ds_group)
 
-        # Qwen API
-        qw_group = QGroupBox("阿里云 Qwen API 配置（OCR识别用）")
-        qw_layout = QFormLayout(qw_group)
-
-        self.qw_api_key = QLineEdit()
-        self.qw_api_key.setEchoMode(QLineEdit.Password)
-        self.qw_api_key.setPlaceholderText("sk-...")
-        qw_layout.addRow("API Key:", self.qw_api_key)
-
-        self.qw_model = QLineEdit()
-        self.qw_model.setPlaceholderText("qwen-vl-max")
-        qw_layout.addRow("模型名称:", self.qw_model)
-
-        self.qw_api_base = QLineEdit()
-        self.qw_api_base.setPlaceholderText("https://dashscope.aliyuncs.com/compatible-mode/v1")
-        qw_layout.addRow("API 端点:", self.qw_api_base)
-
-        layout.addWidget(qw_group)
-
-        # OCR method
+        # OCR 识别方式
         ocr_group = QGroupBox("OCR 识别方式")
         ocr_layout = QVBoxLayout(ocr_group)
 
-        self.ocr_btn_group = QButtonGroup(self)
-        self.radio_qwen = QRadioButton("阿里云 Qwen OCR（推荐，需联网）")
-        self.radio_rapidocr = QRadioButton("本地 RapidOCR（离线，无需API）")
-        self.ocr_btn_group.addButton(self.radio_qwen, 0)
-        self.ocr_btn_group.addButton(self.radio_rapidocr, 1)
+        self.ocr_combo = QComboBox()
+        self.ocr_combo.addItem("阿里云 Qwen API（推荐，需联网）", "qwen")
+        self.ocr_combo.addItem("本地 Ollama（VL模型，需本地服务）", "ollama")
+        self.ocr_combo.addItem("本地 RapidOCR（纯离线文本识别）", "rapidocr")
+        self.ocr_combo.currentIndexChanged.connect(self._on_ocr_method_changed)
+        ocr_layout.addWidget(self.ocr_combo)
 
-        ocr_layout.addWidget(self.radio_qwen)
-        ocr_layout.addWidget(self.radio_rapidocr)
+        # 堆叠面板：不同OCR方式对应不同配置
+        self.ocr_stack = QStackedWidget()
+
+        # 面板0：Qwen 配置
+        qw_panel = QWidget()
+        qw_form = QFormLayout(qw_panel)
+        qw_form.setContentsMargins(0, 8, 0, 0)
+        self.qw_api_key = QLineEdit()
+        self.qw_api_key.setEchoMode(QLineEdit.Password)
+        self.qw_api_key.setPlaceholderText("sk-...")
+        qw_form.addRow("API Key:", self.qw_api_key)
+        self.qw_model = QLineEdit()
+        self.qw_model.setPlaceholderText("qwen-vl-max")
+        qw_form.addRow("模型名称:", self.qw_model)
+        self.qw_api_base = QLineEdit()
+        self.qw_api_base.setPlaceholderText("https://dashscope.aliyuncs.com/compatible-mode/v1")
+        qw_form.addRow("API 端点:", self.qw_api_base)
+        self.ocr_stack.addWidget(qw_panel)
+
+        # 面板1：Ollama 配置
+        ol_panel = QWidget()
+        ol_form = QFormLayout(ol_panel)
+        ol_form.setContentsMargins(0, 8, 0, 0)
+        self.ol_host = QLineEdit()
+        self.ol_host.setPlaceholderText("localhost")
+        ol_form.addRow("服务器:", self.ol_host)
+        self.ol_port = QLineEdit()
+        self.ol_port.setPlaceholderText("11434")
+        ol_form.addRow("端口:", self.ol_port)
+        self.ol_model = QLineEdit()
+        self.ol_model.setPlaceholderText("qwen2.5vl:7b")
+        ol_form.addRow("模型名称:", self.ol_model)
+        self.ocr_stack.addWidget(ol_panel)
+
+        # 面板2：RapidOCR（无需配置）
+        rc_panel = QWidget()
+        rc_layout = QVBoxLayout(rc_panel)
+        rc_layout.setContentsMargins(0, 8, 0, 0)
+        rc_layout.addWidget(QLabel("RapidOCR 为离线文本识别引擎，无需额外配置。\n"
+                                   "注意：不支持姓名/班级识别，仅提取纯文本。"))
+        rc_layout.addStretch()
+        self.ocr_stack.addWidget(rc_panel)
+
+        ocr_layout.addWidget(self.ocr_stack)
+
+        # 自定义 OCR 提示词
+        ocr_layout.addWidget(QLabel("自定义OCR提示词（可选，留空则使用默认）:"))
+        self.ocr_custom_prompt = QTextEdit()
+        self.ocr_custom_prompt.setPlaceholderText(
+            "留空则根据OCR方式自动选择最优提示词。\n"
+            "填写后覆盖默认提示词，适用于特殊识别需求。"
+        )
+        self.ocr_custom_prompt.setMaximumHeight(80)
+        ocr_layout.addWidget(self.ocr_custom_prompt)
 
         layout.addWidget(ocr_group)
 
@@ -225,6 +265,9 @@ class SettingsDialog(QDialog):
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
 
+    def _on_ocr_method_changed(self, index):
+        self.ocr_stack.setCurrentIndex(index)
+
     def load_ui_from_config(self):
         self.ds_api_key.setText(self.config.get("deepseek_api_key", ""))
         self.ds_model.setText(self.config.get("deepseek_model", "deepseek-chat"))
@@ -233,10 +276,17 @@ class SettingsDialog(QDialog):
         self.qw_model.setText(self.config.get("qwen_model", "qwen-vl-max"))
         self.qw_api_base.setText(self.config.get("qwen_api_base", ""))
 
-        if self.config.get("ocr_method", "qwen") == "qwen":
-            self.radio_qwen.setChecked(True)
-        else:
-            self.radio_rapidocr.setChecked(True)
+        self.ol_host.setText(self.config.get("ollama_host", "localhost"))
+        self.ol_port.setText(self.config.get("ollama_port", "11434"))
+        self.ol_model.setText(self.config.get("ollama_model", "qwen2.5vl:7b"))
+
+        # 下拉框 + 堆叠面板
+        ocr_method = self.config.get("ocr_method", "qwen")
+        method_index = {"qwen": 0, "ollama": 1, "rapidocr": 2}.get(ocr_method, 0)
+        self.ocr_combo.setCurrentIndex(method_index)
+        self.ocr_stack.setCurrentIndex(method_index)
+
+        self.ocr_custom_prompt.setPlainText(self.config.get("ocr_custom_prompt", ""))
 
         self.chk_score.setChecked(self.config.get("with_score", True))
         self.chk_comment.setChecked(self.config.get("with_comment", True))
@@ -256,7 +306,14 @@ class SettingsDialog(QDialog):
         self.config["qwen_model"] = self.qw_model.text().strip() or "qwen-vl-max"
         self.config["qwen_api_base"] = self.qw_api_base.text().strip() or "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-        self.config["ocr_method"] = "qwen" if self.radio_qwen.isChecked() else "rapidocr"
+        self.config["ollama_host"] = self.ol_host.text().strip() or "localhost"
+        self.config["ollama_port"] = self.ol_port.text().strip() or "11434"
+        self.config["ollama_model"] = self.ol_model.text().strip() or "qwen2.5vl:7b"
+
+        self.config["ocr_method"] = self.ocr_combo.currentData()
+
+        custom_prompt = self.ocr_custom_prompt.toPlainText().strip()
+        self.config["ocr_custom_prompt"] = custom_prompt
 
         self.config["with_score"] = self.chk_score.isChecked()
         self.config["with_comment"] = self.chk_comment.isChecked()
@@ -267,6 +324,9 @@ class SettingsDialog(QDialog):
         self.config["two_pages_per_student"] = self.chk_two_pages.isChecked()
 
         self.config["extra_requirements"] = self.extra_requirements.toPlainText().strip()
+
+        # 同步自定义 prompt 到 prompts 模块
+        set_ocr_custom_prompt(custom_prompt)
 
         save_config(self.config)
         self.accept()

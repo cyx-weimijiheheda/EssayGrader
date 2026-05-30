@@ -223,6 +223,60 @@ POLISH_SYSTEM_PROMPT = """
 """
 
 
+# ==================== 小模型 OCR 提示词（smolvlm / minicpm-v 等） ====================
+SMOLVLM_OCR_PROMPT = """Recognize the handwritten English text in this image.
+Also look for student name (姓名) and class (班级).
+Return JSON: {"recognized_text": "...", "student_name": "...", "student_class": "..."}
+Do NOT correct grammar or spelling. Only output the JSON, nothing else."""
+
+
+# ==================== Ollama OCR 提示词 ====================
+OLLAMA_OCR_PROMPT = """Please analyze this handwritten essay image and return the result in JSON format.
+
+Your task:
+1. Recognize ALL English text in the image, preserving the original layout, line breaks, and punctuation.
+   Do NOT correct any grammar, spelling, or content.
+2. Look for **student name (姓名)** — typically written in Chinese characters.
+3. Look for **class/grade (班级)** — e.g. "高一(3)班", "Class 3".
+
+Return ONLY a JSON object in this exact format:
+{
+    "recognized_text": "the full recognized English essay text here",
+    "student_name": "detected name or empty string if not found",
+    "student_class": "detected class or empty string if not found"
+}"""
+
+
+def build_ocr_prompt(ocr_method: str = "qwen", model_name: str = "") -> str:
+    """根据OCR方式与模型名自动选择合适的OCR提示词"""
+    # 用户自定义 prompt 优先
+    custom = _get_custom_ocr_prompt()
+    if custom:
+        return custom
+
+    if ocr_method == "ollama":
+        model_lower = model_name.lower()
+        # 小模型用简化 prompt
+        small_models = ["smolvlm", "minicpm", "moondream", "llava", "llama"]
+        if any(m in model_lower for m in small_models):
+            return SMOLVLM_OCR_PROMPT
+        return OLLAMA_OCR_PROMPT
+    return QWEN_OCR_PROMPT
+
+
+_OCR_CUSTOM_PROMPT: str = ""
+
+
+def set_ocr_custom_prompt(prompt: str):
+    """设置用户自定义 OCR 提示词（供 settings_dialog 调用）"""
+    global _OCR_CUSTOM_PROMPT
+    _OCR_CUSTOM_PROMPT = prompt.strip() if prompt else ""
+
+
+def _get_custom_ocr_prompt() -> str:
+    return _OCR_CUSTOM_PROMPT
+
+
 def build_polish_prompt() -> str:
     """构建精修升格范文的系统提示词"""
     return POLISH_SYSTEM_PROMPT

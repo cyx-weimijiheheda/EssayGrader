@@ -26,7 +26,10 @@ from PySide6.QtGui import QFont, QAction
 
 import requests
 
-from prompts import build_ocr_correction_prompt, build_grading_prompt, build_qwen_ocr_prompt, build_polish_prompt
+from prompts import (
+    build_ocr_correction_prompt, build_grading_prompt, build_polish_prompt,
+    build_ocr_prompt, set_ocr_custom_prompt
+)
 from settings_dialog import SettingsDialog, load_config as load_config_file, save_config as save_config_file
 from export_docx import export_to_docx
 
@@ -174,6 +177,8 @@ class GraderWorker(QThread):
         ocr_method = self.config.get("ocr_method", "qwen")
         if ocr_method == "qwen":
             return self._qwen_ocr_image(image_path)
+        elif ocr_method == "ollama":
+            return self._ollama_ocr_image(image_path)
         else:
             text = self._rapidocr_image(image_path)
             return {"ocr_text": text, "student_name": "", "student_class": ""}
@@ -206,7 +211,7 @@ class GraderWorker(QThread):
                     "role": "user",
                     "content": [
                         {"type": "image_url", "image_url": {"url": data_uri}},
-                        {"type": "text", "text": build_qwen_ocr_prompt()}
+                        {"type": "text", "text": build_ocr_prompt("qwen", model)}
                     ]
                 }
             ],
@@ -229,6 +234,58 @@ class GraderWorker(QThread):
             }
         except (json.JSONDecodeError, KeyError):
             # 兼容旧格式（纯文本）
+            return {
+                "ocr_text": content,
+                "student_name": "",
+                "student_class": ""
+            }
+
+    # ---- Ollama OCR ----
+
+    def _ollama_ocr_image(self, image_path: str) -> dict:
+        """使用本地Ollama VL模型进行OCR识别"""
+        host = self.config.get("ollama_host", "localhost")
+        port = self.config.get("ollama_port", "11434")
+        model = self.config.get("ollama_model", "qwen2.5vl:7b")
+
+        with open(image_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+
+        ext = os.path.splitext(image_path)[1].lower()
+        mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                    ".png": "image/png", ".bmp": "image/bmp"}
+        mime_type = mime_map.get(ext, "image/jpeg")
+        data_uri = f"data:{mime_type};base64,{image_data}"
+
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                        {"type": "text", "text": build_ocr_prompt("ollama", model)}
+                    ]
+                }
+            ],
+            "max_tokens": 2000
+        }
+
+        api_url = f"http://{host}:{port}/v1/chat/completions"
+        response = requests.post(api_url, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        result = response.json()
+        content = result["choices"][0]["message"]["content"].strip()
+
+        try:
+            data = _parse_json_response(content)
+            return {
+                "ocr_text": data.get("recognized_text", content),
+                "student_name": data.get("student_name", ""),
+                "student_class": data.get("student_class", "")
+            }
+        except (json.JSONDecodeError, KeyError):
             return {
                 "ocr_text": content,
                 "student_name": "",
@@ -379,7 +436,7 @@ class GraderWorker(QThread):
 
     def run(self):
         # RapidOCR模式下预先初始化
-        if self.config.get("ocr_method", "qwen") != "qwen":
+        if self.config.get("ocr_method", "qwen") == "rapidocr":
             try:
                 self._init_rapidocr()
             except Exception as e:
@@ -401,7 +458,8 @@ class GraderWorker(QThread):
             return
 
         total = len(image_files)
-        ocr_method_label = "Qwen" if self.config.get("ocr_method", "qwen") == "qwen" else "RapidOCR"
+        ocr_method = self.config.get("ocr_method", "qwen")
+        ocr_method_label = {"qwen": "Qwen", "ollama": "Ollama", "rapidocr": "RapidOCR"}.get(ocr_method, ocr_method)
         self.log_updated.emit(f"找到 {total} 张图片，OCR方式: {ocr_method_label}，开始批改...")
 
         do_ocr_correction = self.config.get("ocr_correction", True)
@@ -651,6 +709,7 @@ class MainWindow(QMainWindow):
         config = load_config_file()
         self.essay_title.setPlainText(config.get("essay_title", ""))
         self.folder_path.setText(config.get("last_folder", ""))
+        set_ocr_custom_prompt(config.get("ocr_custom_prompt", ""))
 
     def save_main_fields(self):
         """保存主窗口字段到配置文件"""
@@ -683,13 +742,14 @@ class MainWindow(QMainWindow):
         config = self._current_config()
 
         # 根据OCR方式校验
-        if config.get("ocr_method", "qwen") == "qwen":
+        ocr_method = config.get("ocr_method", "qwen")
+        if ocr_method == "qwen":
             if not config.get("qwen_api_key", ""):
                 QMessageBox.warning(self, "错误",
                     "请在 文件→设置 中配置阿里云Qwen API Key，\n"
-                    "或切换到本地RapidOCR模式")
+                    "或切换到其他OCR模式")
                 return
-        # RapidOCR不需要API Key
+        # ollama / rapidocr 不需要API Key
 
         if not config.get("deepseek_api_key", ""):
             QMessageBox.warning(self, "错误", "请在 文件→设置 中配置DeepSeek API Key")

@@ -1,12 +1,21 @@
+# === 缓存与日志 ===
+graded_cache.json
+last_log.txt
+
+# === 构建产物 ===
+dist/
+build/
 __pycache__/
 *.pyc
 *.pyo
-essay_grader_config.json
-graded_cache.json
-.vscode/
-*.egg-info/
-dist/
-build/
-last_log.txt
 essay_grader.exe
+
+# === 配置与密钥 ===
+essay_grader_config.json
+
+# === 工具与临时 ===
+.vscode/
+.venv/
 .claude/
+tmp/
+*.egg-info/
