@@ -313,16 +313,60 @@ class GraderWorker(QThread):
         return "\n".join(text_lines)
 
     def _scan_barcode(self, image_path: str) -> str:
-        """扫描图片中的条形码/二维码，返回解码数据"""
+        """扫描图片中的条形码/二维码，pyzbar 多预处理变体 + zxing-cpp 兜底"""
+        from PIL import Image, ImageEnhance, ImageOps
+
+        def _decode_pyzbar(img) -> list:
+            try:
+                from pyzbar.pyzbar import decode
+                return decode(img)
+            except Exception:
+                return []
+
+        def _decode_zxing(img) -> list:
+            try:
+                import zxingcpp
+                return zxingcpp.read_barcodes(
+                    img, formats=zxingcpp.BarcodeFormat.LinearCodes,
+                    try_rotate=True, try_downscale=True, try_invert=True
+                )
+            except Exception:
+                return []
+
+        img = Image.open(image_path)
+
+        # 收集所有预处理变体
+        variants = [img, img.convert("L")]
         try:
-            from pyzbar.pyzbar import decode
-            from PIL import Image
-            img = Image.open(image_path)
-            barcodes = decode(img)
-            if barcodes:
-                return barcodes[0].data.decode("utf-8").strip()
+            gray = img.convert("L")
+            variants.append(ImageEnhance.Contrast(gray).enhance(2.0))
+            variants.append(ImageEnhance.Contrast(gray).enhance(3.0))
+            variants.append(ImageOps.autocontrast(gray))
+            variants.append(gray.point(lambda p: 255 if p > 128 else 0, "1"))
+            variants.append(gray.point(lambda p: 255 if p > 100 else 0, "1"))
         except Exception:
             pass
+
+        # pyzbar 主识别（去重）
+        seen = set()
+        for v in variants:
+            for barcode in _decode_pyzbar(v):
+                try:
+                    text = barcode.data.decode("utf-8").strip()
+                except Exception:
+                    text = str(barcode.data).strip()
+                key = (barcode.type, text)
+                if key not in seen and text:
+                    seen.add(key)
+                    return text
+
+        # zxing-cpp 兜底
+        for v in variants:
+            for result in _decode_zxing(v):
+                text = result.text.strip()
+                if text:
+                    return text
+
         return ""
 
     # ---- DeepSeek API 调用 ----
@@ -483,19 +527,21 @@ class GraderWorker(QThread):
                     continue
 
             # ---- 步骤2：条形码扫描 ----
-            barcode_data = self._scan_barcode(image_path)
-            if barcode_data:
-                self.log_updated.emit(f"  - 条形码识别: {barcode_data}")
-            else:
-                self.log_updated.emit("  - 未检测到条形码")
+            barcode_data = ""
+            if self.config.get("detect_barcode", True):
+                barcode_data = self._scan_barcode(image_path)
+                if barcode_data:
+                    self.log_updated.emit(f"  - 条形码识别: {barcode_data}")
+                else:
+                    self.log_updated.emit("  - 未检测到条形码")
 
             # ---- 步骤3：OCR识别 ----
             try:
                 self.log_updated.emit("  - OCR识别中...")
                 ocr_result = self._do_ocr(image_path)
                 ocr_text = ocr_result.get("ocr_text", "")
-                student_name = ocr_result.get("student_name", "")
-                student_class = ocr_result.get("student_class", "")
+                student_name = ocr_result.get("student_name", "") if self.config.get("detect_name", True) else ""
+                student_class = ocr_result.get("student_class", "") if self.config.get("detect_class", True) else ""
                 if not ocr_text:
                     self.log_updated.emit("  - 警告: OCR识别为空")
                 else:

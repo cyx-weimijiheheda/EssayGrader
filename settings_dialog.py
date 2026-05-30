@@ -79,6 +79,9 @@ DEFAULT_CONFIG = {
     "ollama_port": "11434",
     "ollama_model": "qwen2.5vl:7b",
     "ocr_custom_prompt": "",
+    "detect_barcode": True,
+    "detect_name": True,
+    "detect_class": True,
     "with_score": True,
     "with_comment": True,
     "with_correction": True,
@@ -229,6 +232,9 @@ class SettingsDialog(QDialog):
         self.chk_skip_duplicates = QCheckBox("避免重复批改（跳过已批改的相同图片）")
         self.chk_polish = QCheckBox("生成精修升格范文（基于原文和批改结果，生成高分升格版）")
         self.chk_two_pages = QCheckBox("每位学生 DOCX 占满 2 页（不足补空页，方便打印分发）")
+        self.chk_detect_barcode = QCheckBox("识别条形码 / 二维码（考号）")
+        self.chk_detect_name = QCheckBox("识别学生姓名（OCR 自动提取）")
+        self.chk_detect_class = QCheckBox("识别学生班级（OCR 自动提取）")
 
         grading_layout.addWidget(self.chk_score)
         grading_layout.addWidget(self.chk_comment)
@@ -237,6 +243,9 @@ class SettingsDialog(QDialog):
         grading_layout.addWidget(self.chk_skip_duplicates)
         grading_layout.addWidget(self.chk_polish)
         grading_layout.addWidget(self.chk_two_pages)
+        grading_layout.addWidget(self.chk_detect_barcode)
+        grading_layout.addWidget(self.chk_detect_name)
+        grading_layout.addWidget(self.chk_detect_class)
 
         layout.addWidget(grading_group)
 
@@ -295,6 +304,9 @@ class SettingsDialog(QDialog):
         self.chk_skip_duplicates.setChecked(self.config.get("skip_duplicates", True))
         self.chk_polish.setChecked(self.config.get("with_polish", True))
         self.chk_two_pages.setChecked(self.config.get("two_pages_per_student", True))
+        self.chk_detect_barcode.setChecked(self.config.get("detect_barcode", True))
+        self.chk_detect_name.setChecked(self.config.get("detect_name", True))
+        self.chk_detect_class.setChecked(self.config.get("detect_class", True))
 
         self.extra_requirements.setPlainText(self.config.get("extra_requirements", ""))
 
@@ -322,6 +334,9 @@ class SettingsDialog(QDialog):
         self.config["skip_duplicates"] = self.chk_skip_duplicates.isChecked()
         self.config["with_polish"] = self.chk_polish.isChecked()
         self.config["two_pages_per_student"] = self.chk_two_pages.isChecked()
+        self.config["detect_barcode"] = self.chk_detect_barcode.isChecked()
+        self.config["detect_name"] = self.chk_detect_name.isChecked()
+        self.config["detect_class"] = self.chk_detect_class.isChecked()
 
         self.config["extra_requirements"] = self.extra_requirements.toPlainText().strip()
 
