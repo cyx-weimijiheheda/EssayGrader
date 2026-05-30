@@ -8,8 +8,8 @@
 
 | 步骤 | 干了什么 | 用什么干的 |
 |---|---|---|
-| 扫码 | 扫描作文图片上的条形码，识别考号 | pyzbar |
-| OCR | 把手写英文变成文本，顺便认姓名和班级 | 阿里云 Qwen-VL / 本地 RapidOCR |
+| 扫码 | 扫描条形码/二维码，识别考号 | pyzbar + zxing-cpp 兜底 |
+| OCR | 把手写英文变成文本，顺便认姓名和班级 | 阿里云 Qwen-VL / Ollama 本地VL / RapidOCR |
 | 校字 | 把 OCR 认错的地方修掉（但绝不碰学生自己的语法错误） | DeepSeek |
 | 打分 | 按高考标准评分：内容5分 + 语言5分 + 结构3分 + 格式2分 = 15分 | DeepSeek |
 | 改错 | 逐处标出错误，用 `[错误:原文→修改|理由]` 格式嵌在修正版里 | DeepSeek |
@@ -27,19 +27,28 @@
 pip install -r requirements.txt
 ```
 
-依赖：PySide6、requests、rapidocr-onnxruntime、pyzbar、Pillow。
+依赖：PySide6、requests、rapidocr-onnxruntime、pyzbar、zxing-cpp、Pillow、python-docx。
 
-如果用阿里云 Qwen 做 OCR（推荐），除此之外无需其他配置。如果用本地 RapidOCR（离线模式），什么 API Key 都不用填。
+Linux 用户如果使用 pyzbar 条码识别，需额外安装系统库：
+
+```bash
+# Arch
+sudo pacman -S zbar
+# Ubuntu/Debian
+sudo apt install libzbar0
+```
+
+zxing-cpp 作为条码识别兜底引擎无需系统库，Windows 下也可直接使用。
 
 ### 配置
 
-打开软件 → **文件 → 设置**，填入：
+打开软件 → **文件 → 设置**，根据 OCR 方式选择对应配置：
 
-- **DeepSeek API Key**：必填，批改评分全靠它
-- **Qwen API Key**：用 Qwen OCR 时填，用 RapidOCR 可跳过
-- **OCR 方式**：Qwen（推荐，手写识别更准）或 RapidOCR（离线，无需联网）
+- **阿里云 Qwen API**（推荐，手写识别最准）：填入 API Key、模型名、API 端点
+- **本地 Ollama**（需本地部署 VL 模型如 qwen2.5vl / smolvlm）：填入服务器地址、端口、模型名
+- **本地 RapidOCR**（纯离线文本识别）：无需配置
 
-其余选项——是否打分、是否写评语、是否生成改错修正版、是否升格——用复选框控制，按需开关。
+其余选项——评分、评语、改错、OCR修正、去重、升格范文、双页导出、条码/姓名/班级检测——用复选框按需开关。OCR 提示词可在设置中自定义，留空则根据模型自动选择最优 prompt。
 
 ### 批改
 
@@ -51,7 +60,7 @@ pip install -r requirements.txt
 
 ### 去重
 
-同一个学生的同一张照片不会被重复批改。程序用 SHA256 比对文件内容，按考号 > 姓名 > 文件名匹配历史记录。关掉软件再开也不会丢——缓存存在 `graded_cache.json` 里。
+同一个学生的同一张照片不会被重复批改。程序在 OCR 之前先用 SHA256 比对文件内容，命中缓存则直接跳过所有 API 调用。分批多次批改同一文件夹时，之前缓存的结果会自动进入本次导出。缓存存在 `graded_cache.json` 里，可随时删除重置。
 
 ### 附加要求
 
@@ -71,8 +80,9 @@ pip install -r requirements.txt
 - 每位学生一个独立节，页眉带姓名和考号
 - 评分表带彩色表头
 - 修正版用红色删除线标错误、绿色标修改建议
-- 升格范文带蓝色左边框
-- 如果学生严重偏题，还会额外生成一篇"学习版范文"，用黄色左边框
+- 升格范文带蓝色左边框，学习版范文用黄色左边框
+- 可选每位学生占满 2 页（不足补空页），方便打印分发
+- 如果学生严重偏题，还会额外生成一篇"学习版范文"
 
 ---
 
