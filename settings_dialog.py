@@ -193,9 +193,21 @@ class SettingsDialog(QDialog):
         self.ol_port = QLineEdit()
         self.ol_port.setPlaceholderText("11434")
         ol_form.addRow("端口:", self.ol_port)
-        self.ol_model = QLineEdit()
-        self.ol_model.setPlaceholderText("qwen2.5vl:7b")
-        ol_form.addRow("模型名称:", self.ol_model)
+
+        # 模型下拉框 + 刷新按钮
+        model_row = QHBoxLayout()
+        self.ol_model = QComboBox()
+        self.ol_model.setEditable(True)
+        self.ol_model.setPlaceholderText("点击刷新获取模型列表...")
+        self.ol_model.setMinimumWidth(200)
+        model_row.addWidget(self.ol_model, 1)
+        self.ol_refresh_btn = QPushButton("刷新模型列表")
+        self.ol_refresh_btn.clicked.connect(self._refresh_ollama_models)
+        model_row.addWidget(self.ol_refresh_btn)
+        ol_form.addRow("模型名称:", model_row)
+
+        self.ol_status = QLabel("")
+        ol_form.addRow("", self.ol_status)
         self.ocr_stack.addWidget(ol_panel)
 
         # 面板2：RapidOCR（无需配置）
@@ -276,6 +288,35 @@ class SettingsDialog(QDialog):
 
     def _on_ocr_method_changed(self, index):
         self.ocr_stack.setCurrentIndex(index)
+        if index == 1:  # ollama
+            self._refresh_ollama_models()
+
+    def _refresh_ollama_models(self):
+        """从 Ollama 服务器拉取可用模型列表"""
+        import requests
+        host = self.ol_host.text().strip() or "localhost"
+        port = self.ol_port.text().strip() or "11434"
+        url = f"http://{host}:{port}/api/tags"
+        current = self.ol_model.currentText()
+        self.ol_model.clear()
+        self.ol_status.setText("正在获取模型列表...")
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+            names = [m["name"] for m in models if "name" in m]
+            self.ol_model.addItems(names)
+            if current:
+                idx = self.ol_model.findText(current)
+                if idx >= 0:
+                    self.ol_model.setCurrentIndex(idx)
+                else:
+                    self.ol_model.setCurrentText(current)
+            self.ol_status.setText(f"共 {len(names)} 个模型")
+        except Exception as e:
+            self.ol_status.setText(f"获取失败: {e}")
+            if current:
+                self.ol_model.setCurrentText(current)
 
     def load_ui_from_config(self):
         self.ds_api_key.setText(self.config.get("deepseek_api_key", ""))
@@ -287,7 +328,7 @@ class SettingsDialog(QDialog):
 
         self.ol_host.setText(self.config.get("ollama_host", "localhost"))
         self.ol_port.setText(self.config.get("ollama_port", "11434"))
-        self.ol_model.setText(self.config.get("ollama_model", "qwen2.5vl:7b"))
+        self.ol_model.setCurrentText(self.config.get("ollama_model", "qwen2.5vl:7b"))
 
         # 下拉框 + 堆叠面板
         ocr_method = self.config.get("ocr_method", "qwen")
@@ -320,7 +361,7 @@ class SettingsDialog(QDialog):
 
         self.config["ollama_host"] = self.ol_host.text().strip() or "localhost"
         self.config["ollama_port"] = self.ol_port.text().strip() or "11434"
-        self.config["ollama_model"] = self.ol_model.text().strip() or "qwen2.5vl:7b"
+        self.config["ollama_model"] = self.ol_model.currentText().strip() or "qwen2.5vl:7b"
 
         self.config["ocr_method"] = self.ocr_combo.currentData()
 

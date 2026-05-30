@@ -220,7 +220,14 @@ class GraderWorker(QThread):
 
         api_url = f"{api_base}/chat/completions"
         response = requests.post(api_url, headers=headers, json=payload, timeout=60)
-        response.raise_for_status()
+        if not response.ok:
+            detail = ""
+            try:
+                err = response.json()
+                detail = err.get("error", {}).get("message", "") or err.get("message", "") or str(err)
+            except Exception:
+                detail = response.text[:200]
+            raise Exception(f"Qwen API 返回 {response.status_code}: {detail}")
         result = response.json()
         content = result["choices"][0]["message"]["content"].strip()
 
@@ -274,7 +281,16 @@ class GraderWorker(QThread):
 
         api_url = f"http://{host}:{port}/v1/chat/completions"
         response = requests.post(api_url, headers=headers, json=payload, timeout=120)
-        response.raise_for_status()
+        if not response.ok:
+            detail = ""
+            try:
+                err = response.json()
+                detail = err.get("error", {}).get("message", "")
+                if not detail:
+                    detail = err.get("error", str(err))
+            except Exception:
+                detail = response.text[:200]
+            raise Exception(f"Ollama API 返回 {response.status_code}: {detail}")
         result = response.json()
         content = result["choices"][0]["message"]["content"].strip()
 
