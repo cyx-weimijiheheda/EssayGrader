@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+essay_grader_config.json
+graded_cache.json
+.vscode/
+*.egg-info/
+dist/
+build/
+last_log.txt
+essay_grader.exe
+.claude/
