@@ -6,18 +6,33 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 rapidocr_imports = collect_submodules('rapidocr_onnxruntime')
 rapidocr_datas = collect_data_files('rapidocr_onnxruntime')
 
-# 收集 onnxruntime 的所有子模块（含原生 DLL）
+# 收集 onnxruntime 的所有子模块（含原生 .dll / .so）
 onnx_imports = collect_submodules('onnxruntime')
 
 # 收集 pyzbar 的子模块
 pyzbar_imports = collect_submodules('pyzbar')
+
+# 收集 zxing-cpp 的子模块（含原生库）
+zxing_imports = collect_submodules('zxingcpp')
+
+# 收集 PIL 的子模块（条码识别预处理用）
+pil_imports = collect_submodules('PIL')
+
+hiddenimports = (
+    rapidocr_imports +
+    onnx_imports +
+    pyzbar_imports +
+    zxing_imports +
+    pil_imports +
+    ['python-docx']
+)
 
 a = Analysis(
     ['essay_grader.py'],
     pathex=[],
     binaries=[],
     datas=rapidocr_datas,
-    hiddenimports=rapidocr_imports + onnx_imports + pyzbar_imports,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -33,7 +48,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='essay_grader',
+    name='EssayGrader',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
