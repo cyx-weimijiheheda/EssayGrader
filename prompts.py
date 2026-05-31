@@ -10,8 +10,9 @@ QWEN_OCR_PROMPT = """Please analyze this handwritten essay image and return the 
 Your task:
 1. Recognize ALL English text in the image, preserving the original layout, line breaks, and punctuation.
    Do NOT correct any grammar, spelling, or content.
-2. Look for **student name (姓名)** — typically written in Chinese characters in a designated area (e.g., "姓名：___" or "Name：___").
-3. Look for **class/grade (班级)** — typically written as something like "高一(3)班", "高三1班", "Class 3", etc.
+2. Look for the **student's real name (姓名)** — this is typically handwritten in Chinese characters
+   in a *dedicated name field* (e.g., "姓名：___" or "Name：___"), separate from the essay content.
+3. Look for **class/grade (班级)** — typically in a dedicated field like "班级：高一(3)班", "Class 3", etc.
 
 Return ONLY a JSON object (no markdown, no extra text) in this exact format:
 {
@@ -21,6 +22,9 @@ Return ONLY a JSON object (no markdown, no extra text) in this exact format:
 }
 
 Important:
+- ⚠️ Do NOT extract names that appear *within* the English essay text (e.g. "My name is Li Ming"
+  in the letter body is the fictional letter-writer, NOT the real student name).
+- Only extract the name from a dedicated 姓名/Name field outside the essay.
 - If you cannot detect a field, set it to an empty string "".
 - Do NOT make up or guess values — only extract what you can clearly see.
 - The recognized_text field is required; student_name and student_class are optional."""
@@ -240,7 +244,9 @@ SMOLVLM_OCR_SYSTEM = (
 SMOLVLM_OCR_USER = (
     "Transcribe ALL handwritten English text from this image. "
     "Preserve spelling, grammar, layout, line breaks exactly as written — do NOT correct anything.\n\n"
-    "Also look for student name (姓名, in Chinese) and class (班级, e.g. 高一3班) written on the page.\n\n"
+    "Also look for student name (姓名, in Chinese) and class (班级, e.g. 高一3班) "
+    "written in DEDICATED FIELDS outside the essay (e.g. 姓名：___). "
+    "Do NOT extract names that appear within the English essay text itself.\n\n"
     "Output the text directly. No introduction, no JSON, no markdown formatting."
 )
 
@@ -251,8 +257,9 @@ OLLAMA_OCR_PROMPT = """Please analyze this handwritten essay image and return th
 Your task:
 1. Recognize ALL English text in the image, preserving the original layout, line breaks, and punctuation.
    Do NOT correct any grammar, spelling, or content.
-2. Look for **student name (姓名)** — typically written in Chinese characters.
-3. Look for **class/grade (班级)** — e.g. "高一(3)班", "Class 3".
+2. Look for **student name (姓名)** — typically written in Chinese characters in a dedicated field
+   (e.g. 姓名：___) OUTSIDE the essay body. Do NOT extract names from within the English essay text.
+3. Look for **class/grade (班级)** — e.g. "高一(3)班", "Class 3", in a dedicated field.
 
 Return ONLY a JSON object in this exact format:
 {

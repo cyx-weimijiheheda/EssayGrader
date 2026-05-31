@@ -208,6 +208,14 @@ class SettingsDialog(QDialog):
 
         self.ol_status = QLabel("")
         ol_form.addRow("", self.ol_status)
+        recommend = QLabel(
+            "推荐 OCR 模型：qwen3.5:0.8b（873M 超轻量/Vision/JSON）｜"
+            "qwen2.5vl:7b（7B 高精度）｜"
+            "minicpm-v:8b（指令跟随好）"
+        )
+        recommend.setWordWrap(True)
+        recommend.setStyleSheet("color: #666; font-size: 11px;")
+        ol_form.addRow(recommend)
         self.ocr_stack.addWidget(ol_panel)
 
         # 面板2：RapidOCR（无需配置）

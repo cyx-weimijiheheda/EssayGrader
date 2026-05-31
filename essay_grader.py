@@ -301,7 +301,7 @@ class GraderWorker(QThread):
         }
 
         api_url = f"http://{host}:{port}/api/chat"
-        response = requests.post(api_url, headers=headers, json=payload, timeout=300)
+        response = requests.post(api_url, headers=headers, json=payload, timeout=1200)
         if not response.ok:
             detail = ""
             try:
