@@ -514,14 +514,16 @@ class GraderWorker(QThread):
     # ---- 主流程 ----
 
     def run(self):
-        # RapidOCR模式下预先初始化
+        # RapidOCR: 使用主线程预热的实例，避免QThread内初始化导致segfault
         if self.config.get("ocr_method", "qwen") == "rapidocr":
-            try:
-                self._init_rapidocr()
-            except Exception as e:
-                self.error_occurred.emit(str(e))
-                self.finished.emit()
-                return
+            self._rapidocr = getattr(self, "_prewarmed_rapidocr", None)
+            if self._rapidocr is None:
+                try:
+                    self._init_rapidocr()
+                except Exception as e:
+                    self.error_occurred.emit(str(e))
+                    self.finished.emit()
+                    return
 
         # 获取图片文件
         image_extensions = {'.jpg', '.jpeg', '.png', '.bmp'}
@@ -874,7 +876,19 @@ class MainWindow(QMainWindow):
         self.result_text.clear()
         self.all_results.clear()
 
+        # RapidOCR 在主线程预热，避免 QThread 内初始化 onnxruntime 导致 segfault
+        if ocr_method == "rapidocr":
+            try:
+                from rapidocr_onnxruntime import RapidOCR
+                _prewarmed = RapidOCR()
+                self.append_log("RapidOCR 初始化完成")
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"RapidOCR 初始化失败: {e}")
+                return
+
         self.worker = GraderWorker(folder, self.essay_title.toPlainText(), config)
+        if ocr_method == "rapidocr":
+            self.worker._prewarmed_rapidocr = _prewarmed
         self.worker.log_updated.connect(self.append_log)
         self.worker.progress_updated.connect(self.update_progress)
         self.worker.result_ready.connect(self.on_result_ready)
