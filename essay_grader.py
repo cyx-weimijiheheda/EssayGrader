@@ -290,31 +290,31 @@ class GraderWorker(QThread):
             messages.append({"role": "system", "content": ocr_system})
         messages.append({
             "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": data_uri}},
-                {"type": "text", "text": ocr_user}
-            ]
+            "content": ocr_user,
+            "images": [image_data]
         })
         payload = {
             "model": model,
             "messages": messages,
-            "max_tokens": 2000
+            "stream": False,
+            "options": {"num_ctx": 4096}
         }
 
-        api_url = f"http://{host}:{port}/v1/chat/completions"
-        response = requests.post(api_url, headers=headers, json=payload, timeout=120)
+        api_url = f"http://{host}:{port}/api/chat"
+        response = requests.post(api_url, headers=headers, json=payload, timeout=300)
         if not response.ok:
             detail = ""
             try:
                 err = response.json()
-                detail = err.get("error", {}).get("message", "")
-                if not detail:
-                    detail = err.get("error", str(err))
+                detail = err.get("error", {}).get("message", "") or err.get("error", str(err))
             except Exception:
                 detail = response.text[:200]
             raise Exception(f"Ollama API 返回 {response.status_code}: {detail}")
         result = response.json()
-        content = result["choices"][0]["message"]["content"].strip()
+        content = result["message"]["content"].strip()
+
+        # 剥离思考模型的 <think>...</think> 块
+        content = re.sub(r'<think>.*?</think>\s*', '', content, flags=re.DOTALL).strip()
 
         try:
             data = _parse_json_response(content)
@@ -605,6 +605,17 @@ class GraderWorker(QThread):
                     correction_result = self._call_ocr_correction(ocr_text)
                     text_for_grading = correction_result.get("ocr_corrected_text", ocr_text)
                     self.log_updated.emit(f"  - OCR修正完成，共{len(text_for_grading)}字符")
+                    # DeepSeek提取的姓名/班级补填（小模型OCR可能没有）
+                    if not student_name:
+                        s = correction_result.get("student_name", "")
+                        if s:
+                            student_name = s
+                            self.log_updated.emit(f"  - DeepSeek识别姓名: {student_name}")
+                    if not student_class:
+                        c = correction_result.get("student_class", "")
+                        if c:
+                            student_class = c
+                            self.log_updated.emit(f"  - DeepSeek识别班级: {student_class}")
                     time.sleep(0.5)
                 except Exception as e:
                     self.log_updated.emit(f"  - OCR修正失败: {e}，使用原始OCR文本继续")

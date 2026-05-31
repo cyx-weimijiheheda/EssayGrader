@@ -53,8 +53,15 @@ OCR_CORRECTION_SYSTEM_PROMPT = """
 # 输出格式
 请严格按照以下JSON格式输出，不要输出任何额外内容：
 {
-    "ocr_corrected_text": "仅修正OCR错误后的完整原文"
+    "ocr_corrected_text": "仅修正OCR错误后的完整原文",
+    "student_name": "从原文中提取的学生姓名，中文姓名，如未发现则为空字符串",
+    "student_class": "从原文中提取的班级，如高一3班、Class 3等，如未发现则为空字符串"
 }
+
+# 姓名/班级提取说明
+- 姓名和班级通常写在作文纸的顶部或标题区域
+- 如果OCR文本中包含疑似姓名（2-3个中文字、无空格）或班级（含"年级""班""Class"等字样），请提取出来
+- 如果无法确定，student_name 和 student_class 设为空字符串 ""
 """
 
 
@@ -233,9 +240,8 @@ SMOLVLM_OCR_SYSTEM = (
 SMOLVLM_OCR_USER = (
     "Transcribe ALL handwritten English text from this image. "
     "Preserve spelling, grammar, layout, line breaks exactly as written — do NOT correct anything.\n\n"
-    "Also find student name (姓名, in Chinese) and class (班级, e.g. 高一3班).\n\n"
-    'Output ONLY a JSON object. No introduction, no explanation, no markdown:\n'
-    '{"recognized_text": "the full text here", "student_name": "name or empty", "student_class": "class or empty"}'
+    "Also look for student name (姓名, in Chinese) and class (班级, e.g. 高一3班) written on the page.\n\n"
+    "Output the text directly. No introduction, no JSON, no markdown formatting."
 )
 
 
