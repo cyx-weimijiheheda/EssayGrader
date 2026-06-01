@@ -716,6 +716,7 @@ class MainWindow(QMainWindow):
         params_layout = QFormLayout(params_group)
 
         self.essay_title = QTextEdit()
+        self.essay_title.setAcceptRichText(False)
         self.essay_title.setPlaceholderText("例如：假定你是李华，给你的英国笔友Chris写一封邮件...")
         self.essay_title.setMaximumHeight(80)
         params_layout.addRow("作文题目:", self.essay_title)

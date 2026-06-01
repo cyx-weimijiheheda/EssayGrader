@@ -247,6 +247,7 @@ class SettingsDialog(QDialog):
         # 自定义 OCR 提示词
         ocr_layout.addWidget(QLabel("自定义OCR提示词（可选，留空则使用默认）:"))
         self.ocr_custom_prompt = QTextEdit()
+        self.ocr_custom_prompt.setAcceptRichText(False)
         self.ocr_custom_prompt.setPlaceholderText(
             "留空则根据OCR方式自动选择最优提示词。\n"
             "填写后覆盖默认提示词，适用于特殊识别需求。"
@@ -289,6 +290,7 @@ class SettingsDialog(QDialog):
         extra_layout = QVBoxLayout(extra_group)
 
         self.extra_requirements = QTextEdit()
+        self.extra_requirements.setAcceptRichText(False)
         placeholder = (
             "在此填写特殊的批改要求，留空则默认填入「无」。\n"
             "例如：\n"
