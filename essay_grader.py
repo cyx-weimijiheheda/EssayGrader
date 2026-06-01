@@ -30,7 +30,7 @@ from prompts import (
     build_ocr_correction_prompt, build_grading_prompt, build_polish_prompt,
     build_ocr_prompt, set_ocr_custom_prompt
 )
-from settings_dialog import SettingsDialog, load_config as load_config_file, save_config as save_config_file
+from settings_dialog import SettingsDialog, load_config as load_config_file, save_config as save_config_file, get_base_path
 from export_docx import export_to_docx
 
 
@@ -88,7 +88,7 @@ def render_inline_errors(text: str) -> str:
 
 
 # ==================== 已批改缓存 ====================
-CACHE_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_DIR = get_base_path()
 CACHE_PATH = os.path.join(CACHE_DIR, "graded_cache.json")
 LOG_FILE = os.path.join(CACHE_DIR, "last_log.txt")
 

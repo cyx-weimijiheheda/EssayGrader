@@ -4,6 +4,7 @@
 """
 
 import os
+import sys
 import json
 import base64
 import hashlib
@@ -18,7 +19,21 @@ from PySide6.QtCore import Qt
 
 from prompts import set_ocr_custom_prompt
 
-CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def get_base_path():
+    """获取程序基础路径（兼容 PyInstaller 打包成 EXE）
+
+    PyInstaller 打包后 __file__ 指向临时解压目录，退出时会被清理。
+    因此需要检测是否为打包环境，使用 EXE 所在目录作为基础路径。
+    """
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包环境：使用 EXE 所在目录
+        return os.path.dirname(sys.executable)
+    # 源码运行环境：使用当前脚本所在目录
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+CONFIG_DIR = get_base_path()
 CONFIG_PATH = os.path.join(CONFIG_DIR, "essay_grader_config.json")
 
 # ==================== 旧格式迁移 ====================
