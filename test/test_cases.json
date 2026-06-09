@@ -1,0 +1,20 @@
+{
+  "test_suite": "Reading Changes Lives - 申请邮件",
+  "essay_title": "假定你是李华。你校英语社团将举办主题为 \"Reading Changes Lives\"（阅读改变人生） 的英语分享会，现向全校学生征集发言人。请你给英语社团负责人Chris写一封申请邮件，内容包括：表达申请意愿；介绍自己的阅读经历及收获；说明自己适合担任分享人的原因。注意：写作词数应为80左右；请按如下格式在答题卡的相应位置作答。",
+  "test_cases": [
+    {
+      "image": "test_1.png",
+      "expected_content": "Dear Chris,\n\nI am writing to apply to be a speaker at the upcoming sharing event themed \"Reading Changes Lives\".\n\nAs an enthusiastic reader, I spend at least an hour reading every day. Books have opened a new world to me and helped me develop critical thinking skills. Among all the books I have read, biographies impress me most because they teach me how to face challenges with courage and confidence.\n\nI believe I am a suitable candidate for the event. Besides having rich reading experience, I am good at public speaking and have participated in several English speech contests. Therefore, I am confident that I can share my ideas clearly and inspire more students to enjoy reading.\n\nI would appreciate it if you could consider my application.\n\nYours,\nLi Hua",
+      "expected_score_range": [10, 15],
+      "student_name": "",
+      "student_class": ""
+    },
+    {
+      "image": "test_2.png",
+      "expected_content": "Dear Chris,\n\nKnowing that the English Club is looking for speakers for the sharing event \"Reading Changes Lives\", I would like to recommend myself.\n\nReading has been an essential part of my life since primary school. Through books, I have not only broadened my horizons but also learned to view the world from different perspectives. Recently, I finished reading several classic novels, from which I gained valuable insights into human nature and social responsibility.\n\nWhat makes me a qualified speaker is my passion for reading and my ability to communicate effectively in English. Having served as the host of various school activities, I feel comfortable speaking in front of an audience. More importantly, I hope my personal story can encourage others to discover the power of reading.\n\nThank you for your time and consideration. I am looking forward to your reply.\n\nYours sincerely,\nLi Hua",
+      "expected_score_range": [10, 15],
+      "student_name": "",
+      "student_class": ""
+    }
+  ]
+}
