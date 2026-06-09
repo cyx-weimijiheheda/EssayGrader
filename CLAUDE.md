@@ -120,8 +120,8 @@ python test/run_test.py
 # 打包
 pyinstaller essay_grader.spec
 
-# CI 发布：打 tag 触发自动构建 + Release
-git tag v0.4.0 && git push --tags
+# CI 发布：打 tag 触发自动构建 + Release（版本号按实际递增）
+git tag vX.Y.Z && git push --tags
 ```
 
 ## 安全设计
