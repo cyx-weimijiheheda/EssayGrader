@@ -18,12 +18,18 @@ zxing_imports = collect_submodules('zxingcpp')
 # 收集 PIL 的子模块（条码识别预处理用）
 pil_imports = collect_submodules('PIL')
 
+# 收集 paddleocr / paddlepaddle 的子模块
+paddleocr_imports = collect_submodules('paddleocr')
+paddle_imports = collect_submodules('paddle')
+
 hiddenimports = (
     rapidocr_imports +
     onnx_imports +
     pyzbar_imports +
     zxing_imports +
     pil_imports +
+    paddleocr_imports +
+    paddle_imports +
     ['python-docx']
 )
 

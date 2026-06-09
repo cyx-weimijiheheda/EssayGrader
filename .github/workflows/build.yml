@@ -13,15 +13,27 @@ jobs:
         include:
           - os: windows-latest
             artifact: EssayGrader.exe
-            platform: win64
+            platform: windows
+            arch: x86_64
           - os: ubuntu-latest
             artifact: EssayGrader
-            platform: linux64
+            platform: linux
+            arch: x86_64
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev-${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -38,11 +50,27 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller essay_grader.spec
 
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cd dist
+          chmod +x EssayGrader
+          tar czf "EssayGrader-${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" EssayGrader
+          rm EssayGrader
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cd dist
+          mv EssayGrader.exe "EssayGrader-${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}.exe"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: EssayGrader-${{ matrix.platform }}
-          path: dist/${{ matrix.artifact }}
+          name: EssayGrader-${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/EssayGrader-*
           if-no-files-found: error
 
   release:
@@ -53,16 +81,35 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
-          pattern: EssayGrader-*
+          pattern: EssayGrader-${{ github.ref_name }}-*
           merge-multiple: true
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          PREV_TAG=$(git tag --sort=-v:refname | grep -A1 "^${{ github.ref_name }}$" | tail -1)
+          echo "## 更新内容" > /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "${{ github.ref_name }}" ]; then
+            git log --pretty=format:"- %s (%h)" $PREV_TAG..${{ github.ref_name }} >> /tmp/changelog.md
+          else
+            git log --pretty=format:"- %s (%h)" -1 ${{ github.ref_name }} >> /tmp/changelog.md
+          fi
+          echo "" >> /tmp/changelog.md
+          cat /tmp/changelog.md
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: /tmp/changelog.md
           files: |
-            EssayGrader.exe
-            EssayGrader
+            EssayGrader-*
           draft: false
           generate_release_notes: true

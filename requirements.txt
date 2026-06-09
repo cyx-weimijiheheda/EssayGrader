@@ -5,3 +5,5 @@ pyzbar>=0.1.9
 zxing-cpp>=2.0.0
 Pillow>=9.0.0
 python-docx>=0.8.11
+paddlepaddle
+paddleocr

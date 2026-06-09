@@ -2,8 +2,8 @@
 """
 高中英语应用文批量批改工具
 功能：批量识别文件夹中的手写作文图片，调用DeepSeek API进行批改评分
-OCR：支持阿里云Qwen-VL API / 本地RapidOCR双模式
-依赖：pip install PySide6 requests rapidocr-onnxruntime python-docx
+OCR：支持 PaddleOCR / 阿里云Qwen-VL API / Ollama / RapidOCR 多模式
+依赖：pip install -r requirements.txt
 """
 
 import sys
@@ -178,6 +178,7 @@ class GraderWorker(QThread):
         self._is_cancelled = False
         self._mutex = QMutex()
         self._rapidocr = None
+        self._paddleocr = None
         self.cache = GradedCache()
         self.skip_duplicates = config.get("skip_duplicates", True)
 
@@ -193,11 +194,14 @@ class GraderWorker(QThread):
 
     def _do_ocr(self, image_path: str) -> dict:
         """根据配置选择OCR方式，返回 {ocr_text, student_name, student_class}"""
-        ocr_method = self.config.get("ocr_method", "qwen")
+        ocr_method = self.config.get("ocr_method", "paddleocr")
         if ocr_method == "qwen":
             return self._qwen_ocr_image(image_path)
         elif ocr_method == "ollama":
             return self._ollama_ocr_image(image_path)
+        elif ocr_method == "paddleocr":
+            text = self._paddleocr_image(image_path)
+            return {"ocr_text": text, "student_name": "", "student_class": ""}
         else:
             text = self._rapidocr_image(image_path)
             return {"ocr_text": text, "student_name": "", "student_class": ""}
@@ -349,6 +353,25 @@ class GraderWorker(QThread):
             return ""
         text_lines = [line[1] for line in result]
         return "\n".join(text_lines)
+
+    # ---- PaddleOCR ----
+
+    def _init_paddleocr(self):
+        """延迟初始化PaddleOCR"""
+        if self._paddleocr is None:
+            try:
+                from paddleocr import PaddleOCR
+                self._paddleocr = PaddleOCR(lang='en', use_textline_orientation=False, enable_mkldnn=False, text_detection_model_name='PP-OCRv4_mobile_det', text_recognition_model_name='PP-OCRv4_mobile_rec')
+            except Exception as e:
+                raise Exception(f"PaddleOCR初始化失败: {str(e)}")
+
+    def _paddleocr_image(self, image_path: str) -> str:
+        """使用PaddleOCR本地识别单张图片"""
+        self._init_paddleocr()
+        result = self._paddleocr.predict(image_path)
+        if not result or not result[0].get("rec_texts", []):
+            return ""
+        return "\n".join(result[0]["rec_texts"])
 
     def _scan_barcode(self, image_path: str) -> str:
         """扫描图片中的条形码/二维码，pyzbar 多预处理变体 + zxing-cpp 兜底"""
@@ -514,12 +537,22 @@ class GraderWorker(QThread):
     # ---- 主流程 ----
 
     def run(self):
-        # RapidOCR: 使用主线程预热的实例，避免QThread内初始化导致segfault
-        if self.config.get("ocr_method", "qwen") == "rapidocr":
+        # 本地OCR: 使用主线程预热的实例，避免QThread内初始化导致segfault
+        ocr_method = self.config.get("ocr_method", "paddleocr")
+        if ocr_method == "rapidocr":
             self._rapidocr = getattr(self, "_prewarmed_rapidocr", None)
             if self._rapidocr is None:
                 try:
                     self._init_rapidocr()
+                except Exception as e:
+                    self.error_occurred.emit(str(e))
+                    self.finished.emit()
+                    return
+        elif ocr_method == "paddleocr":
+            self._paddleocr = getattr(self, "_prewarmed_paddleocr", None)
+            if self._paddleocr is None:
+                try:
+                    self._init_paddleocr()
                 except Exception as e:
                     self.error_occurred.emit(str(e))
                     self.finished.emit()
@@ -540,7 +573,7 @@ class GraderWorker(QThread):
 
         total = len(image_files)
         ocr_method = self.config.get("ocr_method", "qwen")
-        ocr_method_label = {"qwen": "Qwen", "ollama": "Ollama", "rapidocr": "RapidOCR"}.get(ocr_method, ocr_method)
+        ocr_method_label = {"qwen": "Qwen", "ollama": "Ollama", "rapidocr": "RapidOCR", "paddleocr": "PaddleOCR"}.get(ocr_method, ocr_method)
         self.log_updated.emit(f"找到 {total} 张图片，OCR方式: {ocr_method_label}，开始批改...")
 
         do_ocr_correction = self.config.get("ocr_correction", True)
@@ -574,13 +607,15 @@ class GraderWorker(QThread):
 
             # ---- 步骤3：OCR识别 ----
             try:
-                ocr_method = self.config.get("ocr_method", "qwen")
+                ocr_method = self.config.get("ocr_method", "paddleocr")
                 if ocr_method == "ollama":
-                    ocr_model = self.config.get("ollama_model", "qwen2.5vl:7b")
+                    ocr_model = self.config.get("ollama_model", "")
                     self.log_updated.emit(f"  - OCR识别中（Ollama/{ocr_model}）...")
                 elif ocr_method == "qwen":
                     ocr_model = self.config.get("qwen_model", "qwen-vl-max")
                     self.log_updated.emit(f"  - OCR识别中（Qwen/{ocr_model}）...")
+                elif ocr_method == "paddleocr":
+                    self.log_updated.emit("  - OCR识别中（PaddleOCR）...")
                 else:
                     self.log_updated.emit("  - OCR识别中（RapidOCR）...")
                 ocr_result = self._do_ocr(image_path)
@@ -757,9 +792,17 @@ class MainWindow(QMainWindow):
 
         self.result_text = QTextEdit()
         self.result_text.setReadOnly(True)
-        self.result_text.setFont(QFont("Microsoft YaHei", 10))
+        self.result_text.setFont(QFont("Microsoft YaHei", 9))
         right_layout.addWidget(QLabel("批改详情:"))
         right_layout.addWidget(self.result_text)
+
+        self.regrade_btn = QPushButton("重新批改此篇")
+        self.regrade_btn.setVisible(False)
+        self.regrade_btn.clicked.connect(self.regrade_current)
+        self.regrade_btn.setStyleSheet(
+            "background-color: #FF9800; color: white; font-weight: bold;"
+        )
+        right_layout.addWidget(self.regrade_btn)
 
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
@@ -826,6 +869,7 @@ class MainWindow(QMainWindow):
     def open_settings(self):
         """打开设置对话框"""
         dialog = SettingsDialog(self)
+        dialog.log_message.connect(self.append_log)
         if dialog.exec():
             self.load_main_config()
             self.append_log("设置已更新")
@@ -845,14 +889,14 @@ class MainWindow(QMainWindow):
         config = self._current_config()
 
         # 根据OCR方式校验
-        ocr_method = config.get("ocr_method", "qwen")
+        ocr_method = config.get("ocr_method", "paddleocr")
         if ocr_method == "qwen":
             if not config.get("qwen_api_key", ""):
                 QMessageBox.warning(self, "错误",
                     "请在 文件→设置 中配置阿里云Qwen API Key，\n"
                     "或切换到其他OCR模式")
                 return
-        # ollama / rapidocr 不需要API Key
+        # paddleocr / ollama / rapidocr 不需要API Key
 
         if not config.get("deepseek_api_key", ""):
             QMessageBox.warning(self, "错误", "请在 文件→设置 中配置DeepSeek API Key")
@@ -877,7 +921,8 @@ class MainWindow(QMainWindow):
         self.result_text.clear()
         self.all_results.clear()
 
-        # RapidOCR 在主线程预热，避免 QThread 内初始化 onnxruntime 导致 segfault
+        # 本地OCR在主线程预热，避免 QThread 内初始化导致 segfault
+        _prewarmed = None
         if ocr_method == "rapidocr":
             try:
                 from rapidocr_onnxruntime import RapidOCR
@@ -886,10 +931,20 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"RapidOCR 初始化失败: {e}")
                 return
+        elif ocr_method == "paddleocr":
+            try:
+                from paddleocr import PaddleOCR
+                _prewarmed = PaddleOCR(lang='en', use_textline_orientation=False, enable_mkldnn=False, text_detection_model_name='PP-OCRv4_mobile_det', text_recognition_model_name='PP-OCRv4_mobile_rec')
+                self.append_log("PaddleOCR 初始化完成")
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"PaddleOCR 初始化失败: {e}")
+                return
 
         self.worker = GraderWorker(folder, self.essay_title.toPlainText(), config)
         if ocr_method == "rapidocr":
             self.worker._prewarmed_rapidocr = _prewarmed
+        elif ocr_method == "paddleocr":
+            self.worker._prewarmed_paddleocr = _prewarmed
         self.worker.log_updated.connect(self.append_log)
         self.worker.progress_updated.connect(self.update_progress)
         self.worker.result_ready.connect(self.on_result_ready)
@@ -898,6 +953,7 @@ class MainWindow(QMainWindow):
 
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
+        self.regrade_btn.setVisible(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
 
@@ -939,6 +995,71 @@ class MainWindow(QMainWindow):
     def on_list_selected(self, index):
         if 0 <= index < len(self.all_results):
             self.display_result(self.all_results[index]["result"])
+            worker_running = self.worker and self.worker.isRunning()
+            self.regrade_btn.setVisible(not worker_running)
+
+    def regrade_current(self):
+        """重新批改当前选中的作文"""
+        current_row = self.file_list.currentRow()
+        if current_row < 0 or current_row >= len(self.all_results):
+            return
+
+        if self.worker and self.worker.isRunning():
+            QMessageBox.warning(self, "提示", "批改任务正在进行中，请等待完成后再重新批改")
+            return
+
+        entry = self.all_results[current_row]
+        filename = entry["filename"]
+        folder = self.folder_path.text()
+        image_path = os.path.join(folder, filename)
+        if not os.path.exists(image_path):
+            QMessageBox.warning(self, "错误", f"找不到图片文件: {image_path}")
+            return
+
+        # 移除旧条目
+        del self.all_results[current_row]
+        self.file_list.takeItem(current_row)
+        self.result_text.clear()
+        self.regrade_btn.setVisible(False)
+
+        # 创建临时目录存放单张图片
+        import tempfile
+        import shutil
+        self._regrade_tmpdir = tempfile.mkdtemp()
+        tmp_image = os.path.join(self._regrade_tmpdir, filename)
+        shutil.copy2(image_path, tmp_image)
+
+        config = self._current_config()
+        config["skip_duplicates"] = False
+
+        self.worker = GraderWorker(self._regrade_tmpdir, self.essay_title.toPlainText(), config)
+        self.worker.skip_duplicates = False
+        self.worker.log_updated.connect(self.append_log)
+        self.worker.progress_updated.connect(self.update_progress)
+        self.worker.result_ready.connect(self.on_regrade_result_ready)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.error_occurred.connect(self.on_error)
+
+        self.start_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setMaximum(1)
+        self.progress_bar.setValue(0)
+
+        self.append_log(f"开始重新批改: {filename}")
+        self.worker.start()
+
+    def on_regrade_result_ready(self, filename, result):
+        """重新批改的结果插入到列表首位"""
+        self.all_results.insert(0, {"filename": filename, "result": result})
+        total_score = result.get("total_score", 0)
+        student_name = result.get("student_name", "")
+        label = f"{filename}"
+        if student_name:
+            label += f"  [{student_name}]"
+        label += f"  {total_score}/15"
+        self.file_list.insertItem(0, label)
+        self.file_list.setCurrentRow(0)
 
     def display_result(self, result):
         total = result.get("total_score", 0)
@@ -969,10 +1090,10 @@ class MainWindow(QMainWindow):
             info_html = "<p><b>" + "&nbsp;&nbsp;|&nbsp;&nbsp;".join(info_parts) + "</b></p><hr>"
 
         html = f"""
-        <h3>评分详情</h3>
+        <p style='font-size:14px;font-weight:bold;margin:4px 0;'>评分详情</p>
         {info_html}
-        <table border="0" cellpadding="5">
-        <tr><td><b>总分：</b></td><td><font color="red" size="5">{total}</font> / 15</td></tr>
+        <table border="0" cellpadding="3">
+        <tr><td><b>总分：</b></td><td><span style='color:red;font-size:16px;font-weight:bold;'>{total}</span> / 15</td></tr>
         <tr><td>内容要点：</td><td>{content}/5</td></tr>
         <tr><td>语言质量：</td><td>{language}/5</td></tr>
         <tr><td>篇章结构：</td><td>{structure}/3</td></tr>
@@ -981,48 +1102,56 @@ class MainWindow(QMainWindow):
         """
 
         if errors:
-            html += "<h4>错误分析：</h4><ul>"
+            html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>错误分析：</p><ul>"
             for err in errors:
                 html += f"<li>{err}</li>"
             html += "</ul>"
 
         if ocr_suspicions:
-            html += "<h4>OCR可疑识别：</h4><ul>"
+            html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>OCR可疑识别：</p><ul>"
             for sus in ocr_suspicions:
                 html += f"<li>{sus}</li>"
             html += "</ul>"
 
         if comment:
-            html += f"<h4>评语：</h4><p style='line-height:1.8;'>{comment}</p>"
+            html += f"<p style='font-size:12px;font-weight:bold;margin:4px 0;'>评语：</p><p style='line-height:1.5;'>{comment}</p>"
 
         if ocr_corrected:
-            html += "<h4>OCR修正版：</h4>"
-            html += f"<pre style='background-color:#f5f5f5; padding:10px; border-radius:5px; white-space:pre-wrap;'>{ocr_corrected}</pre>"
+            html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>OCR修正版：</p>"
+            html += f"<pre style='background-color:#f5f5f5; padding:6px; border-radius:5px; white-space:pre-wrap; line-height:1.5;'>{ocr_corrected}</pre>"
 
         if corrected:
             rendered = render_inline_errors(corrected)
-            html += "<h4>修正版（含错误标注）：</h4>"
-            html += f"<div style='background-color:#fafafa; padding:12px; border-radius:5px; line-height:2.2;'>{rendered}</div>"
+            html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>修正版（含错误标注）：</p>"
+            html += f"<div style='background-color:#fafafa; padding:8px; border-radius:5px; line-height:1.6;'>{rendered}</div>"
         elif errors:
             html += "<p><i>（本次未生成改错修正版）</i></p>"
 
         if polished:
-            html += "<h4>精修升格范文：</h4>"
-            html += f"<div style='background-color:#f0f7ff; padding:12px; border-radius:5px; line-height:2.0; border-left:4px solid #4A90D9;'>{polished}</div>"
+            html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>精修升格范文：</p>"
+            html += f"<div style='background-color:#f0f7ff; padding:8px; border-radius:5px; line-height:1.5; border-left:4px solid #4A90D9;'>{polished}</div>"
 
         learning = result.get("learning_version", "")
         if learning:
-            html += "<h4>学习版范文（主题偏离，直接回应题目要求）：</h4>"
-            html += f"<div style='background-color:#fff7e0; padding:12px; border-radius:5px; line-height:2.0; border-left:4px solid #E6A817;'>{learning}</div>"
+            html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>学习版范文（主题偏离，直接回应题目要求）：</p>"
+            html += f"<div style='background-color:#fff7e0; padding:8px; border-radius:5px; line-height:1.5; border-left:4px solid #E6A817;'>{learning}</div>"
 
         self.result_text.setHtml(html)
 
     def on_finished(self):
+        # 清理重新批改的临时目录
+        import shutil
+        if hasattr(self, '_regrade_tmpdir') and self._regrade_tmpdir and os.path.isdir(self._regrade_tmpdir):
+            shutil.rmtree(self._regrade_tmpdir, ignore_errors=True)
+            self._regrade_tmpdir = None
+
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
         if self.all_results:
             self.append_log(f"全部批改完成！共 {len(self.all_results)} 篇作文")
+        if self.file_list.currentRow() >= 0:
+            self.regrade_btn.setVisible(True)
 
     def on_error(self, error_msg):
         self.append_log(f"错误: {error_msg}")
@@ -1081,6 +1210,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.save_main_fields()
+        # 清理重新批改的临时目录
+        import shutil
+        if hasattr(self, '_regrade_tmpdir') and self._regrade_tmpdir and os.path.isdir(self._regrade_tmpdir):
+            shutil.rmtree(self._regrade_tmpdir, ignore_errors=True)
         if self.worker and self.worker.isRunning():
             reply = QMessageBox.question(
                 self, "确认", "批改任务正在进行中，确定要退出吗？",

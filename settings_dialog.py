@@ -13,9 +13,9 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QLineEdit, QTextEdit, QCheckBox,
     QComboBox, QStackedWidget, QPushButton,
-    QDialogButtonBox, QMessageBox, QLabel, QWidget
+    QDialogButtonBox, QMessageBox, QLabel, QWidget, QGridLayout
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 
 from prompts import set_ocr_custom_prompt
 
@@ -89,10 +89,10 @@ DEFAULT_CONFIG = {
     "qwen_api_key": "",
     "qwen_model": "qwen-vl-max",
     "qwen_api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "ocr_method": "qwen",
+    "ocr_method": "paddleocr",
     "ollama_host": "localhost",
     "ollama_port": "11434",
-    "ollama_model": "qwen2.5vl:7b",
+    "ollama_model": "",
     "ocr_custom_prompt": "",
     "detect_barcode": True,
     "detect_name": True,
@@ -110,14 +110,20 @@ DEFAULT_CONFIG = {
 }
 
 
-def load_config() -> dict:
+def load_config(on_log=None) -> dict:
     if os.path.exists(CONFIG_PATH):
+        if on_log:
+            on_log("加载配置文件")
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 config = json.load(f)
-        except Exception:
+        except Exception as e:
+            if on_log:
+                on_log(f"配置文件解析失败: {e}，使用默认配置")
             config = {}
     else:
+        if on_log:
+            on_log("配置文件不存在，使用默认配置")
         config = {}
     config = _migrate_config(config)
     # 用默认值填补缺失的键
@@ -125,33 +131,46 @@ def load_config() -> dict:
     merged.update(config)
     # 如果迁移后配置有变化，回写为明文新格式
     if config != merged:
-        _write_plain(merged)
+        if on_log:
+            on_log("配置文件已迁移为新格式")
+        _write_plain(merged, on_log=on_log)
     return merged
 
 
-def save_config(config: dict) -> None:
-    _write_plain(config)
+def save_config(config: dict, on_log=None) -> None:
+    _write_plain(config, on_log=on_log)
 
 
-def _write_plain(config: dict) -> None:
+def _write_plain(config: dict, on_log=None) -> None:
     """明文写入配置文件"""
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        if on_log:
+            on_log("保存配置")
+    except Exception as e:
+        if on_log:
+            on_log(f"保存配置失败: {e}")
+        raise
 
 
 # ==================== 设置对话框 ====================
 
 class SettingsDialog(QDialog):
+    log_message = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("设置")
-        self.setMinimumWidth(760)
-        self.config = load_config()
+        self.setMinimumWidth(650)
+        self.log_message.emit("打开设置对话框")
+        self.config = load_config(on_log=self.log_message.emit)
         self.setup_ui()
         self.load_ui_from_config()
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
+        layout.setSpacing(8)
 
         # DeepSeek API
         ds_group = QGroupBox("DeepSeek API 配置（批改评分用）")
@@ -173,7 +192,8 @@ class SettingsDialog(QDialog):
         ocr_layout = QVBoxLayout(ocr_group)
 
         self.ocr_combo = QComboBox()
-        self.ocr_combo.addItem("阿里云 Qwen API（推荐，需联网）", "qwen")
+        self.ocr_combo.addItem("本地 PaddleOCR（推荐，离线高精度）", "paddleocr")
+        self.ocr_combo.addItem("阿里云 Qwen API（需联网）", "qwen")
         self.ocr_combo.addItem("本地 Ollama（VL模型，需本地服务）", "ollama")
         self.ocr_combo.addItem("本地 RapidOCR（纯离线文本识别）", "rapidocr")
         self.ocr_combo.currentIndexChanged.connect(self._on_ocr_method_changed)
@@ -182,7 +202,16 @@ class SettingsDialog(QDialog):
         # 堆叠面板：不同OCR方式对应不同配置
         self.ocr_stack = QStackedWidget()
 
-        # 面板0：Qwen 配置
+        # 面板0：PaddleOCR（无需配置）
+        pd_panel = QWidget()
+        pd_layout = QVBoxLayout(pd_panel)
+        pd_layout.setContentsMargins(0, 8, 0, 0)
+        pd_layout.addWidget(QLabel("PaddleOCR 为本地离线OCR引擎，识别精度高，无需额外配置。\n"
+                                    "注意：不支持姓名/班级识别，仅提取纯文本。"))
+        pd_layout.addStretch()
+        self.ocr_stack.addWidget(pd_panel)
+
+        # 面板1：Qwen 配置
         qw_panel = QWidget()
         qw_form = QFormLayout(qw_panel)
         qw_form.setContentsMargins(0, 8, 0, 0)
@@ -223,14 +252,6 @@ class SettingsDialog(QDialog):
 
         self.ol_status = QLabel("")
         ol_form.addRow("", self.ol_status)
-        recommend = QLabel(
-            "推荐 OCR 模型：qwen3.5:0.8b（873M 超轻量/Vision/JSON）｜"
-            "qwen2.5vl:7b（7B 高精度）｜"
-            "minicpm-v:8b（指令跟随好）"
-        )
-        recommend.setWordWrap(True)
-        recommend.setStyleSheet("color: #666; font-size: 11px;")
-        ol_form.addRow(recommend)
         self.ocr_stack.addWidget(ol_panel)
 
         # 面板2：RapidOCR（无需配置）
@@ -252,7 +273,7 @@ class SettingsDialog(QDialog):
             "留空则根据OCR方式自动选择最优提示词。\n"
             "填写后覆盖默认提示词，适用于特殊识别需求。"
         )
-        self.ocr_custom_prompt.setMaximumHeight(80)
+        self.ocr_custom_prompt.setMaximumHeight(60)
         ocr_layout.addWidget(self.ocr_custom_prompt)
 
         layout.addWidget(ocr_group)
@@ -261,27 +282,40 @@ class SettingsDialog(QDialog):
         grading_group = QGroupBox("批改选项")
         grading_layout = QVBoxLayout(grading_group)
 
-        self.chk_score = QCheckBox("出具分数（取消则不返回各项得分）")
-        self.chk_comment = QCheckBox("生成精到评语（取消则不返回文字评语）")
-        self.chk_correction = QCheckBox("生成改错修正版（取消则仅指出错误，不输出修正全文）")
-        self.chk_ocr_correction = QCheckBox("执行 OCR 修正阶段（推荐开启，先修正OCR错误再批改）")
-        self.chk_skip_duplicates = QCheckBox("避免重复批改（跳过已批改的相同图片）")
-        self.chk_polish = QCheckBox("生成精修升格范文（基于原文和批改结果，生成高分升格版）")
-        self.chk_two_pages = QCheckBox("每位学生 DOCX 占满 2 页（不足补空页，方便打印分发）")
-        self.chk_detect_barcode = QCheckBox("识别条形码 / 二维码（考号）")
-        self.chk_detect_name = QCheckBox("识别学生姓名（OCR 自动提取）")
-        self.chk_detect_class = QCheckBox("识别学生班级（OCR 自动提取）")
+        self.chk_score = QCheckBox("出具分数")
+        self.chk_score.setToolTip("取消则不返回各项得分")
+        self.chk_comment = QCheckBox("生成精到评语")
+        self.chk_comment.setToolTip("取消则不返回文字评语")
+        self.chk_correction = QCheckBox("生成改错修正版")
+        self.chk_correction.setToolTip("取消则仅指出错误，不输出修正全文")
+        self.chk_ocr_correction = QCheckBox("执行 OCR 修正阶段")
+        self.chk_ocr_correction.setToolTip("推荐开启，先修正OCR错误再批改")
+        self.chk_skip_duplicates = QCheckBox("避免重复批改")
+        self.chk_skip_duplicates.setToolTip("跳过已批改的相同图片")
+        self.chk_polish = QCheckBox("生成精修升格范文")
+        self.chk_polish.setToolTip("基于原文和批改结果，生成高分升格版")
+        self.chk_two_pages = QCheckBox("DOCX 每位学生占满 2 页")
+        self.chk_two_pages.setToolTip("不足补空页，方便打印分发")
+        self.chk_detect_barcode = QCheckBox("识别条形码/二维码")
+        self.chk_detect_barcode.setToolTip("识别考号")
+        self.chk_detect_name = QCheckBox("识别学生姓名")
+        self.chk_detect_name.setToolTip("OCR 自动提取")
+        self.chk_detect_class = QCheckBox("识别学生班级")
+        self.chk_detect_class.setToolTip("OCR 自动提取")
 
-        grading_layout.addWidget(self.chk_score)
-        grading_layout.addWidget(self.chk_comment)
-        grading_layout.addWidget(self.chk_correction)
-        grading_layout.addWidget(self.chk_ocr_correction)
-        grading_layout.addWidget(self.chk_skip_duplicates)
-        grading_layout.addWidget(self.chk_polish)
-        grading_layout.addWidget(self.chk_two_pages)
-        grading_layout.addWidget(self.chk_detect_barcode)
-        grading_layout.addWidget(self.chk_detect_name)
-        grading_layout.addWidget(self.chk_detect_class)
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        grid.addWidget(self.chk_score, 0, 0)
+        grid.addWidget(self.chk_comment, 0, 1)
+        grid.addWidget(self.chk_correction, 1, 0)
+        grid.addWidget(self.chk_ocr_correction, 1, 1)
+        grid.addWidget(self.chk_skip_duplicates, 2, 0)
+        grid.addWidget(self.chk_polish, 2, 1)
+        grid.addWidget(self.chk_two_pages, 3, 0)
+        grid.addWidget(self.chk_detect_barcode, 3, 1)
+        grid.addWidget(self.chk_detect_name, 4, 0)
+        grid.addWidget(self.chk_detect_class, 4, 1)
+        grading_layout.addLayout(grid)
 
         layout.addWidget(grading_group)
 
@@ -300,7 +334,7 @@ class SettingsDialog(QDialog):
             "- 本次作文为建议信，请重点检查建议句型的多样性"
         )
         self.extra_requirements.setPlaceholderText(placeholder)
-        self.extra_requirements.setMaximumHeight(120)
+        self.extra_requirements.setMaximumHeight(80)
         extra_layout.addWidget(self.extra_requirements)
 
         layout.addWidget(extra_group)
@@ -313,7 +347,7 @@ class SettingsDialog(QDialog):
 
     def _on_ocr_method_changed(self, index):
         self.ocr_stack.setCurrentIndex(index)
-        if index == 1:  # ollama
+        if index == 2:  # ollama
             self._refresh_ollama_models()
 
     def _refresh_ollama_models(self):
@@ -325,6 +359,7 @@ class SettingsDialog(QDialog):
         current = self.ol_model.currentText()
         self.ol_model.clear()
         self.ol_status.setText("正在获取模型列表...")
+        self.log_message.emit(f"正在获取Ollama模型列表 ({url})...")
         try:
             resp = requests.get(url, timeout=10)
             resp.raise_for_status()
@@ -338,8 +373,10 @@ class SettingsDialog(QDialog):
                 else:
                     self.ol_model.setCurrentText(current)
             self.ol_status.setText(f"共 {len(names)} 个模型")
+            self.log_message.emit(f"获取到 {len(names)} 个模型")
         except Exception as e:
             self.ol_status.setText(f"获取失败: {e}")
+            self.log_message.emit(f"获取模型列表失败: {e}")
             if current:
                 self.ol_model.setCurrentText(current)
 
@@ -353,11 +390,11 @@ class SettingsDialog(QDialog):
 
         self.ol_host.setText(self.config.get("ollama_host", "localhost"))
         self.ol_port.setText(self.config.get("ollama_port", "11434"))
-        self.ol_model.setCurrentText(self.config.get("ollama_model", "qwen2.5vl:7b"))
+        self.ol_model.setCurrentText(self.config.get("ollama_model", ""))
 
         # 下拉框 + 堆叠面板
-        ocr_method = self.config.get("ocr_method", "qwen")
-        method_index = {"qwen": 0, "ollama": 1, "rapidocr": 2}.get(ocr_method, 0)
+        ocr_method = self.config.get("ocr_method", "paddleocr")
+        method_index = {"paddleocr": 0, "qwen": 1, "ollama": 2, "rapidocr": 3}.get(ocr_method, 0)
         self.ocr_combo.setCurrentIndex(method_index)
         self.ocr_stack.setCurrentIndex(method_index)
 
@@ -386,7 +423,7 @@ class SettingsDialog(QDialog):
 
         self.config["ollama_host"] = self.ol_host.text().strip() or "localhost"
         self.config["ollama_port"] = self.ol_port.text().strip() or "11434"
-        self.config["ollama_model"] = self.ol_model.currentText().strip() or "qwen2.5vl:7b"
+        self.config["ollama_model"] = self.ol_model.currentText().strip()
 
         self.config["ocr_method"] = self.ocr_combo.currentData()
 
@@ -409,5 +446,6 @@ class SettingsDialog(QDialog):
         # 同步自定义 prompt 到 prompts 模块
         set_ocr_custom_prompt(custom_prompt)
 
-        save_config(self.config)
+        save_config(self.config, on_log=self.log_message.emit)
+        self.log_message.emit("设置已保存")
         self.accept()
