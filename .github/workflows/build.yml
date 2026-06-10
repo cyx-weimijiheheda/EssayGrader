@@ -62,7 +62,7 @@ jobs:
           exec "$SCRIPT_DIR/EssayGrader" "$@"
           RUNEOF
           chmod +x run.sh
-          cd ../..
+          cd ..
           tar czf "EssayGrader-${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" EssayGrader
 
       - name: Package (Windows)
@@ -77,7 +77,7 @@ jobs:
           set "PATH=%SCRIPT_DIR%_internal\paddle\libs;%PATH%"
           start "" "%SCRIPT_DIR%EssayGrader.exe" %*
           "@ | Out-File -Encoding ASCII run.bat
-          cd ../..
+          cd ..
           Compress-Archive -Path EssayGrader -DestinationPath "EssayGrader-${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}.zip"
 
       - name: Upload artifact
