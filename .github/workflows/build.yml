@@ -12,11 +12,9 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: EssayGrader.exe
             platform: windows
             arch: x86_64
           - os: ubuntu-latest
-            artifact: EssayGrader
             platform: linux
             arch: x86_64
 
@@ -54,17 +52,33 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          cd dist
+          cd dist/EssayGrader
           chmod +x EssayGrader
+          # 启动脚本：设置 LD_LIBRARY_PATH 让 Paddle dlopen 找到 libmklml_intel.so
+          cat > run.sh << 'RUNEOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          export LD_LIBRARY_PATH="$SCRIPT_DIR/_internal/paddle/libs:$LD_LIBRARY_PATH"
+          exec "$SCRIPT_DIR/EssayGrader" "$@"
+          RUNEOF
+          chmod +x run.sh
+          cd ../..
           tar czf "EssayGrader-${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" EssayGrader
-          rm EssayGrader
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
         run: |
-          cd dist
-          mv EssayGrader.exe "EssayGrader-${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}.exe"
+          cd dist/EssayGrader
+          # 启动脚本：设置 PATH 让 Paddle LoadLibrary 找到 DLL
+          @"
+          @echo off
+          set "SCRIPT_DIR=%~dp0"
+          set "PATH=%SCRIPT_DIR%_internal\paddle\libs;%PATH%"
+          start "" "%SCRIPT_DIR%EssayGrader.exe" %*
+          "@ | Out-File -Encoding ASCII run.bat
+          cd ../..
+          Compress-Archive -Path EssayGrader -DestinationPath "EssayGrader-${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

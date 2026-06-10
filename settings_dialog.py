@@ -195,7 +195,6 @@ class SettingsDialog(QDialog):
         self.ocr_combo.addItem("本地 PaddleOCR（推荐，离线高精度）", "paddleocr")
         self.ocr_combo.addItem("阿里云 Qwen API（需联网）", "qwen")
         self.ocr_combo.addItem("本地 Ollama（VL模型，需本地服务）", "ollama")
-        self.ocr_combo.addItem("本地 RapidOCR（纯离线文本识别）", "rapidocr")
         self.ocr_combo.currentIndexChanged.connect(self._on_ocr_method_changed)
         ocr_layout.addWidget(self.ocr_combo)
 
@@ -227,7 +226,7 @@ class SettingsDialog(QDialog):
         qw_form.addRow("API 端点:", self.qw_api_base)
         self.ocr_stack.addWidget(qw_panel)
 
-        # 面板1：Ollama 配置
+        # 面板2：Ollama 配置
         ol_panel = QWidget()
         ol_form = QFormLayout(ol_panel)
         ol_form.setContentsMargins(0, 8, 0, 0)
@@ -253,15 +252,6 @@ class SettingsDialog(QDialog):
         self.ol_status = QLabel("")
         ol_form.addRow("", self.ol_status)
         self.ocr_stack.addWidget(ol_panel)
-
-        # 面板2：RapidOCR（无需配置）
-        rc_panel = QWidget()
-        rc_layout = QVBoxLayout(rc_panel)
-        rc_layout.setContentsMargins(0, 8, 0, 0)
-        rc_layout.addWidget(QLabel("RapidOCR 为离线文本识别引擎，无需额外配置。\n"
-                                   "注意：不支持姓名/班级识别，仅提取纯文本。"))
-        rc_layout.addStretch()
-        self.ocr_stack.addWidget(rc_panel)
 
         ocr_layout.addWidget(self.ocr_stack)
 
@@ -394,7 +384,7 @@ class SettingsDialog(QDialog):
 
         # 下拉框 + 堆叠面板
         ocr_method = self.config.get("ocr_method", "paddleocr")
-        method_index = {"paddleocr": 0, "qwen": 1, "ollama": 2, "rapidocr": 3}.get(ocr_method, 0)
+        method_index = {"paddleocr": 0, "qwen": 1, "ollama": 2}.get(ocr_method, 0)
         self.ocr_combo.setCurrentIndex(method_index)
         self.ocr_stack.setCurrentIndex(method_index)
 

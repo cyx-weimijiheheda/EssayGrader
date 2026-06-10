@@ -2,7 +2,7 @@
 """
 高中英语应用文批量批改工具
 功能：批量识别文件夹中的手写作文图片，调用DeepSeek API进行批改评分
-OCR：支持 PaddleOCR / 阿里云Qwen-VL API / Ollama / RapidOCR 多模式
+OCR：支持 PaddleOCR / 阿里云Qwen-VL API / Ollama 多模式
 依赖：pip install -r requirements.txt
 """
 
@@ -13,6 +13,7 @@ import time
 import re
 import base64
 import hashlib
+import traceback
 from datetime import datetime
 
 from PySide6.QtWidgets import (
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QMessageBox, QProgressBar, QGroupBox, QFormLayout,
     QLineEdit, QSplitter, QPlainTextEdit
 )
-from PySide6.QtCore import QThread, Signal, Qt, QMutex, QMutexLocker
+from PySide6.QtCore import QThread, Signal, Qt, QMutex, QMutexLocker, QTimer
 from PySide6.QtGui import QFont, QAction
 
 import requests
@@ -77,12 +78,11 @@ def render_inline_errors(text: str) -> str:
         correction = match.group(2)
         reason = match.group(3)
         return (
-            f'<span style="background-color:#ffe0e0;text-decoration:line-through;'
+            f'<span style="text-decoration:line-through;'
             f'padding:1px 3px;border-radius:2px;">{original}</span>'
             f' &rarr; '
-            f'<span style="background-color:#e0ffe0;'
-            f'padding:1px 3px;border-radius:2px;">{correction}</span>'
-            f' <small style="color:#888;">({reason})</small>'
+            f'<span style="padding:1px 3px;border-radius:2px;">{correction}</span>'
+            f' <small style="color:#666;">({reason})</small>'
         )
     return re.sub(pattern, replacer, text)
 
@@ -177,7 +177,6 @@ class GraderWorker(QThread):
         self.config = config
         self._is_cancelled = False
         self._mutex = QMutex()
-        self._rapidocr = None
         self._paddleocr = None
         self.cache = GradedCache()
         self.skip_duplicates = config.get("skip_duplicates", True)
@@ -203,7 +202,7 @@ class GraderWorker(QThread):
             text = self._paddleocr_image(image_path)
             return {"ocr_text": text, "student_name": "", "student_class": ""}
         else:
-            text = self._rapidocr_image(image_path)
+            text = self._paddleocr_image(image_path)
             return {"ocr_text": text, "student_name": "", "student_class": ""}
 
     # ---- Qwen OCR ----
@@ -242,7 +241,10 @@ class GraderWorker(QThread):
         }
 
         api_url = f"{api_base}/chat/completions"
-        response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+        try:
+            response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+        except requests.exceptions.RequestException:
+            raise Exception(f"Qwen API 请求失败:\n{traceback.format_exc()}")
         if not response.ok:
             detail = ""
             try:
@@ -305,7 +307,10 @@ class GraderWorker(QThread):
         }
 
         api_url = f"http://{host}:{port}/api/chat"
-        response = requests.post(api_url, headers=headers, json=payload, timeout=1200)
+        try:
+            response = requests.post(api_url, headers=headers, json=payload, timeout=1200)
+        except requests.exceptions.RequestException:
+            raise Exception(f"Ollama API 请求失败:\n{traceback.format_exc()}")
         if not response.ok:
             detail = ""
             try:
@@ -334,36 +339,17 @@ class GraderWorker(QThread):
                 "student_class": ""
             }
 
-    # ---- RapidOCR ----
-
-    def _init_rapidocr(self):
-        """延迟初始化RapidOCR"""
-        if self._rapidocr is None:
-            try:
-                from rapidocr_onnxruntime import RapidOCR
-                self._rapidocr = RapidOCR()
-            except Exception as e:
-                raise Exception(f"RapidOCR初始化失败: {str(e)}")
-
-    def _rapidocr_image(self, image_path: str) -> str:
-        """使用RapidOCR本地识别单张图片"""
-        self._init_rapidocr()
-        result, _ = self._rapidocr(image_path)
-        if not result:
-            return ""
-        text_lines = [line[1] for line in result]
-        return "\n".join(text_lines)
-
     # ---- PaddleOCR ----
 
     def _init_paddleocr(self):
-        """延迟初始化PaddleOCR"""
+        """延迟初始化PaddleOCR（QThread 内回退路径）"""
         if self._paddleocr is None:
             try:
                 from paddleocr import PaddleOCR
                 self._paddleocr = PaddleOCR(lang='en', use_textline_orientation=False, enable_mkldnn=False, text_detection_model_name='PP-OCRv4_mobile_det', text_recognition_model_name='PP-OCRv4_mobile_rec')
-            except Exception as e:
-                raise Exception(f"PaddleOCR初始化失败: {str(e)}")
+            except Exception:
+                traceback.print_exc()
+                raise Exception(f"PaddleOCR初始化失败:\n{traceback.format_exc()}")
 
     def _paddleocr_image(self, image_path: str) -> str:
         """使用PaddleOCR本地识别单张图片"""
@@ -448,8 +434,18 @@ class GraderWorker(QThread):
             "max_tokens": max_tokens
         }
         api_url = "https://api.deepseek.com/v1/chat/completions"
-        response = requests.post(api_url, headers=headers, json=payload, timeout=90)
-        response.raise_for_status()
+        try:
+            response = requests.post(api_url, headers=headers, json=payload, timeout=90)
+            response.raise_for_status()
+        except requests.exceptions.RequestException:
+            raise Exception(f"DeepSeek API 请求失败:\n{traceback.format_exc()}")
+        except Exception:
+            detail = ""
+            try:
+                detail = response.text[:500]
+            except Exception:
+                pass
+            raise Exception(f"DeepSeek API 返回异常 (HTTP {getattr(response, 'status_code', '?')}):\n{detail}\n{traceback.format_exc()}")
         result = response.json()
         content = result["choices"][0]["message"]["content"]
         return _parse_json_response(content)
@@ -539,16 +535,7 @@ class GraderWorker(QThread):
     def run(self):
         # 本地OCR: 使用主线程预热的实例，避免QThread内初始化导致segfault
         ocr_method = self.config.get("ocr_method", "paddleocr")
-        if ocr_method == "rapidocr":
-            self._rapidocr = getattr(self, "_prewarmed_rapidocr", None)
-            if self._rapidocr is None:
-                try:
-                    self._init_rapidocr()
-                except Exception as e:
-                    self.error_occurred.emit(str(e))
-                    self.finished.emit()
-                    return
-        elif ocr_method == "paddleocr":
+        if ocr_method == "paddleocr":
             self._paddleocr = getattr(self, "_prewarmed_paddleocr", None)
             if self._paddleocr is None:
                 try:
@@ -573,7 +560,7 @@ class GraderWorker(QThread):
 
         total = len(image_files)
         ocr_method = self.config.get("ocr_method", "qwen")
-        ocr_method_label = {"qwen": "Qwen", "ollama": "Ollama", "rapidocr": "RapidOCR", "paddleocr": "PaddleOCR"}.get(ocr_method, ocr_method)
+        ocr_method_label = {"qwen": "Qwen", "ollama": "Ollama", "paddleocr": "PaddleOCR"}.get(ocr_method, ocr_method)
         self.log_updated.emit(f"找到 {total} 张图片，OCR方式: {ocr_method_label}，开始批改...")
 
         do_ocr_correction = self.config.get("ocr_correction", True)
@@ -616,8 +603,6 @@ class GraderWorker(QThread):
                     self.log_updated.emit(f"  - OCR识别中（Qwen/{ocr_model}）...")
                 elif ocr_method == "paddleocr":
                     self.log_updated.emit("  - OCR识别中（PaddleOCR）...")
-                else:
-                    self.log_updated.emit("  - OCR识别中（RapidOCR）...")
                 ocr_result = self._do_ocr(image_path)
                 ocr_text = ocr_result.get("ocr_text", "")
                 student_name = ocr_result.get("student_name", "") if self.config.get("detect_name", True) else ""
@@ -630,9 +615,11 @@ class GraderWorker(QThread):
                     self.log_updated.emit(f"  - 识别姓名: {student_name}")
                 if student_class:
                     self.log_updated.emit(f"  - 识别班级: {student_class}")
-            except Exception as e:
-                self.log_updated.emit(f"  - OCR失败: {e}")
-                self.result_ready.emit(filename, self._make_error_result(f"OCR识别失败: {str(e)}"))
+            except Exception:
+                traceback.print_exc()
+                tb = traceback.format_exc()
+                self.log_updated.emit(f"  - OCR失败:\n{tb}")
+                self.result_ready.emit(filename, self._make_error_result(f"OCR识别失败:\n{tb}"))
                 continue
 
             # ---- 步骤4：OCR修正（可选） ----
@@ -654,8 +641,9 @@ class GraderWorker(QThread):
                             student_class = c
                             self.log_updated.emit(f"  - DeepSeek识别班级: {student_class}")
                     time.sleep(0.5)
-                except Exception as e:
-                    self.log_updated.emit(f"  - OCR修正失败: {e}，使用原始OCR文本继续")
+                except Exception:
+                    traceback.print_exc()
+                    self.log_updated.emit(f"  - OCR修正失败:\n{traceback.format_exc()}，使用原始OCR文本继续")
                     text_for_grading = ocr_text
                     correction_result = {"ocr_corrected_text": ocr_text}
             else:
@@ -669,9 +657,11 @@ class GraderWorker(QThread):
                 grading_result = self._call_grading(text_for_grading)
                 total_score = grading_result.get("total_score", 0)
                 self.log_updated.emit(f"  - 批改完成，得分: {total_score}/15")
-            except Exception as e:
-                self.log_updated.emit(f"  - 批改失败: {e}")
-                error_result = self._make_error_result(f"DeepSeek批改失败: {str(e)}", text_for_grading)
+            except Exception:
+                traceback.print_exc()
+                tb = traceback.format_exc()
+                self.log_updated.emit(f"  - 批改失败:\n{tb}")
+                error_result = self._make_error_result(f"DeepSeek批改失败:\n{tb}", text_for_grading)
                 error_result["student_name"] = student_name
                 error_result["student_class"] = student_class
                 error_result["barcode_data"] = barcode_data
@@ -691,8 +681,9 @@ class GraderWorker(QThread):
                     if learning_version:
                         self.log_updated.emit(f"  - 检测到主题偏离，已额外生成学习版范文（{len(learning_version)}字符）")
                     time.sleep(0.5)
-                except Exception as e:
-                    self.log_updated.emit(f"  - 升格范文生成失败: {e}")
+                except Exception:
+                    traceback.print_exc()
+                    self.log_updated.emit(f"  - 升格范文生成失败:\n{traceback.format_exc()}")
 
             # ---- 合并结果 ----
             combined = {
@@ -824,6 +815,13 @@ class MainWindow(QMainWindow):
             "background-color: #4CAF50; color: white; font-weight: bold;"
         )
 
+        self.spinner_label = QLabel("◐")
+        self.spinner_label.setVisible(False)
+        self.spinner_label.setStyleSheet("font-size: 16px; color: #4CAF50;")
+        self.spinner_timer = QTimer()
+        self.spinner_timer.setInterval(200)
+        self.spinner_timer.timeout.connect(self._spin)
+
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.clicked.connect(self.cancel_grading)
         self.cancel_btn.setEnabled(False)
@@ -835,11 +833,24 @@ class MainWindow(QMainWindow):
         self.export_docx_btn.clicked.connect(self.export_docx)
 
         btn_layout.addWidget(self.start_btn)
+        btn_layout.addWidget(self.spinner_label)
         btn_layout.addWidget(self.cancel_btn)
         btn_layout.addWidget(self.export_btn)
         btn_layout.addWidget(self.export_docx_btn)
         btn_layout.addStretch()
         main_layout.addLayout(btn_layout)
+
+    def _spin(self):
+        """循环切换 Unicode 字符实现旋转动画"""
+        chars = ["◐", "◓", "◑", "◒"]
+        current = self.spinner_label.text()
+        try:
+            idx = chars.index(current)
+        except ValueError:
+            idx = 0
+        else:
+            idx = (idx + 1) % 4
+        self.spinner_label.setText(chars[idx])
 
     # ---- 配置管理 ----
 
@@ -896,7 +907,7 @@ class MainWindow(QMainWindow):
                     "请在 文件→设置 中配置阿里云Qwen API Key，\n"
                     "或切换到其他OCR模式")
                 return
-        # paddleocr / ollama / rapidocr 不需要API Key
+        # paddleocr / ollama 不需要API Key
 
         if not config.get("deepseek_api_key", ""):
             QMessageBox.warning(self, "错误", "请在 文件→设置 中配置DeepSeek API Key")
@@ -923,28 +934,32 @@ class MainWindow(QMainWindow):
 
         # 本地OCR在主线程预热，避免 QThread 内初始化导致 segfault
         _prewarmed = None
-        if ocr_method == "rapidocr":
+        if ocr_method == "paddleocr":
             try:
-                from rapidocr_onnxruntime import RapidOCR
-                _prewarmed = RapidOCR()
-                self.append_log("RapidOCR 初始化完成")
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"RapidOCR 初始化失败: {e}")
-                return
-        elif ocr_method == "paddleocr":
-            try:
+                self.spinner_label.setVisible(True)
+                self.spinner_timer.start()
+                self.append_log("正在加载 PaddleOCR 模型，请稍候...")
                 from paddleocr import PaddleOCR
                 _prewarmed = PaddleOCR(lang='en', use_textline_orientation=False, enable_mkldnn=False, text_detection_model_name='PP-OCRv4_mobile_det', text_recognition_model_name='PP-OCRv4_mobile_rec')
                 self.append_log("PaddleOCR 初始化完成")
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"PaddleOCR 初始化失败: {e}")
+            except Exception:
+                self.spinner_label.setVisible(False)
+                self.spinner_timer.stop()
+                traceback.print_exc()
+                full_tb = traceback.format_exc()
+                self.append_log(f"PaddleOCR 初始化失败:\n{full_tb}")
+                QMessageBox.critical(self, "错误", f"PaddleOCR 初始化失败:\n{full_tb}")
                 return
+        else:
+            # Qwen / Ollama 无需预热，短暂显示反馈后隐藏
+            self.spinner_label.setVisible(True)
+            self.spinner_timer.start()
 
         self.worker = GraderWorker(folder, self.essay_title.toPlainText(), config)
-        if ocr_method == "rapidocr":
-            self.worker._prewarmed_rapidocr = _prewarmed
-        elif ocr_method == "paddleocr":
+        if ocr_method == "paddleocr":
             self.worker._prewarmed_paddleocr = _prewarmed
+        self.spinner_label.setVisible(False)
+        self.spinner_timer.stop()
         self.worker.log_updated.connect(self.append_log)
         self.worker.progress_updated.connect(self.update_progress)
         self.worker.result_ready.connect(self.on_result_ready)
@@ -1118,27 +1133,29 @@ class MainWindow(QMainWindow):
 
         if ocr_corrected:
             html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>OCR修正版：</p>"
-            html += f"<pre style='background-color:#f5f5f5; padding:6px; border-radius:5px; white-space:pre-wrap; line-height:1.5;'>{ocr_corrected}</pre>"
+            html += f"<pre style='padding:6px; border-radius:5px; white-space:pre-wrap; line-height:1.5;'>{ocr_corrected}</pre>"
 
         if corrected:
             rendered = render_inline_errors(corrected)
             html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>修正版（含错误标注）：</p>"
-            html += f"<div style='background-color:#fafafa; padding:8px; border-radius:5px; line-height:1.6;'>{rendered}</div>"
+            html += f"<div style='padding:8px; border-radius:5px; line-height:1.6;'>{rendered}</div>"
         elif errors:
             html += "<p><i>（本次未生成改错修正版）</i></p>"
 
         if polished:
             html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>精修升格范文：</p>"
-            html += f"<div style='background-color:#f0f7ff; padding:8px; border-radius:5px; line-height:1.5; border-left:4px solid #4A90D9;'>{polished}</div>"
+            html += f"<div style='padding:8px; border-radius:5px; line-height:1.5; border-left:4px solid #4A90D9;'>{polished}</div>"
 
         learning = result.get("learning_version", "")
         if learning:
             html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>学习版范文（主题偏离，直接回应题目要求）：</p>"
-            html += f"<div style='background-color:#fff7e0; padding:8px; border-radius:5px; line-height:1.5; border-left:4px solid #E6A817;'>{learning}</div>"
+            html += f"<div style='padding:8px; border-radius:5px; line-height:1.5; border-left:4px solid #E6A817;'>{learning}</div>"
 
         self.result_text.setHtml(html)
 
     def on_finished(self):
+        self.spinner_label.setVisible(False)
+        self.spinner_timer.stop()
         # 清理重新批改的临时目录
         import shutil
         if hasattr(self, '_regrade_tmpdir') and self._regrade_tmpdir and os.path.isdir(self._regrade_tmpdir):
@@ -1154,6 +1171,8 @@ class MainWindow(QMainWindow):
             self.regrade_btn.setVisible(True)
 
     def on_error(self, error_msg):
+        self.spinner_label.setVisible(False)
+        self.spinner_timer.stop()
         self.append_log(f"错误: {error_msg}")
         QMessageBox.critical(self, "错误", error_msg)
         self.start_btn.setEnabled(True)
@@ -1183,8 +1202,9 @@ class MainWindow(QMainWindow):
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(export_data, f, ensure_ascii=False, indent=2)
             QMessageBox.information(self, "成功", f"结果已保存到:\n{file_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"保存失败: {str(e)}")
+        except Exception:
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"保存失败:\n{traceback.format_exc()}")
 
     def export_docx(self):
         """导出为 DOCX 文件"""
@@ -1205,8 +1225,9 @@ class MainWindow(QMainWindow):
             export_to_docx(self.all_results, self.essay_title.toPlainText(), file_path,
                            two_pages_per_student=config.get("two_pages_per_student", True))
             QMessageBox.information(self, "成功", f"结果已保存到:\n{file_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"导出DOCX失败: {str(e)}\n请确认已安装 python-docx")
+        except Exception:
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"导出DOCX失败:\n{traceback.format_exc()}")
 
     def closeEvent(self, event):
         self.save_main_fields()

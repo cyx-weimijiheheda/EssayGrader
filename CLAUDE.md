@@ -23,7 +23,7 @@ test/                 # PaddleOCR 识别测试套件
               ↑                ↑                      ↑                       ↑
          条形码/二维码      多模式可选              安全分隔符包裹              可配置开关
                            Qwen/Ollama/            防提示词注入              分数/评语/改错/范文
-                           PaddleOCR/RapidOCR
+                           PaddleOCR
 ```
 
 **关键细节**：
@@ -52,7 +52,7 @@ test/                 # PaddleOCR 识别测试套件
 6. 精修升格范文（DeepSeek，可选）
 
 **关键设计决策**：
-- 本地 OCR（RapidOCR/PaddleOCR）必须在主线程初始化，通过 `_prewarmed` 属性传给 worker，避免 QThread 内初始化导致 segfault
+- 本地 OCR（PaddleOCR）必须在主线程初始化，通过 `_prewarmed` 属性传给 worker，避免 QThread 内初始化导致 segfault
 - 重新批改时用 `tempfile.mkdtemp()` 创建临时目录，完成后清理
 - 所有 API 调用超时：Qwen/Ollama 60-1200s，DeepSeek 90s
 - Ollama 支持思考模型（`<think>` 标签自动剥离）
@@ -80,7 +80,7 @@ test/                 # PaddleOCR 识别测试套件
 - `_migrate_config()` 自动检测并迁移旧格式
 
 **对话框设计**：
-- OCR 方式用 `QStackedWidget` 切换不同配置面板（PaddleOCR/RapidOCR 无需配置，Qwen/Ollama 显示对应字段）
+- OCR 方式用 `QStackedWidget` 切换不同配置面板（PaddleOCR 无需配置，Qwen/Ollama 显示对应字段）
 - Ollama 模型下拉框支持手动输入 + 一键刷新列表（调用 `/api/tags`）
 - 11 个批改选项复选框，网格布局
 
@@ -95,6 +95,23 @@ test/                 # PaddleOCR 识别测试套件
 - 可选每位学生占满2页（`two_pages_per_student`）
 
 **字体系统**：西文 Calibri / 东亚等线，通过 `OxmlElement` 直接操作 XML 设置 `w:rFonts`
+
+### `essay_grader.spec` — PyInstaller 打包脚本
+
+**`--onedir` 文件夹模式**，关键配置：
+- `name='EssayGrader'` — 输出目录名，与 CI workflow 对齐
+- `console=False` — GUI 应用，Windows 下无黑窗
+- **`COLLECT` 而非 `EXE` 单文件**：onefile 解压 `libpaddle.so`（~150M）会失败或 SIGILL；onedir 原生路径加载正常
+- **`LD_LIBRARY_PATH` 通过启动脚本设置**：`os.environ` 在 PyInstaller 进程中无法可靠让 dlopen 生效，由 `run.sh`/`run.bat` 在进程外设置
+- `upx=False`：UPX 压缩可能损坏 `.so`
+- **PaddleOCR 3.x 必须用 `collect_all` + `copy_metadata`**：
+  - `collect_submodules` 只收 `.py`，漏掉 `paddlex/configs/pipelines/OCR.yaml`
+  - `collect_all` 收 datas + binaries + hiddenimports
+  - `copy_metadata` 收 `.dist-info`，确保 `importlib.metadata.version()` 能找到
+  - 注意：`copy_metadata` 参数是 PyPI 发行包名（`paddlepaddle` 不是 `paddle`）
+  - PaddleX 运行时通过 `importlib.metadata.version(dep)` 检查 `ocr-core` extra 的 6 个依赖（imagesize/opencv-contrib-python/pyclipper/pypdfium2/python-bidi/shapely），漏掉任一个的 `.dist-info` 都会报 `DependencyError`
+- **PaddleOCR 初始化异常必须打完整 traceback**：`traceback.format_exc()` 写入日志 + 弹窗，`str(e)` 吃掉关键信息
+- **禁止**用 `pyinstaller --onefile essay_grader.py` 命令行生成默认 spec，会丢失以上所有定制
 
 ### `test/` — 测试套件
 
@@ -117,10 +134,32 @@ python essay_grader.py
 # 运行测试
 python test/run_test.py
 
-# 打包
-pyinstaller essay_grader.spec
+# 打包（需在 venv 中运行，--onedir 文件夹模式）
+source venv/bin/activate && pyinstaller essay_grader.spec
+# 输出在 dist/EssayGrader/
+# 运行方式（启动脚本自动设 LD_LIBRARY_PATH / PATH）：
+#   Linux:   ./dist/EssayGrader/run.sh
+#   Windows: dist\EssayGrader\run.bat
+# 或手动设环境变量后直接运行：
+#   LD_LIBRARY_PATH=dist/EssayGrader/_internal/paddle/libs ./dist/EssayGrader/EssayGrader
+
+# ⚠️ 最小测试程序打包（定位问题时用）
+# 所有 PyInstaller 构建必须在项目目录下进行，用 --distpath/--workpath 指定输出路径。
+source venv/bin/activate && pyinstaller --onedir --distpath dist_test --workpath build_test test_xxx.py
+```
+
+## ⚠️ 铁律
+
+**禁止在任何 tmpfs 文件系统上运行 PyInstaller 打包！** 包括但不限于：
+- `/tmp`（Arch Linux 默认 tmpfs，仅 2G）
+- `/dev/shm`
+- 内存挂载点
+
+PaddlePaddle 单次打包产出 ~1.5G，占满 tmpfs 会导致**桌面环境崩溃**（XFCE/KDE/GNOME 依赖 `/tmp` 存放运行时文件）。测试打包一律用项目目录下的子文件夹，如 `dist_test/`、`build_test/`。
 
 # CI 发布：打 tag 触发自动构建 + Release（版本号按实际递增）
+# Release 产物命名格式：EssayGrader-{version}-{os}-{arch}.{ext}
+# 例：EssayGrader-v0.4.1-windows-x86_64.zip / EssayGrader-v0.4.1-linux-x86_64.tar.gz
 git tag vX.Y.Z && git push --tags
 ```
 
