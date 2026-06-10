@@ -783,7 +783,9 @@ class MainWindow(QMainWindow):
 
         self.result_text = QTextEdit()
         self.result_text.setReadOnly(True)
-        self.result_text.setFont(QFont("Microsoft YaHei", 9))
+        # 跨平台字体：Windows 用微软雅黑，Linux 用思源黑体
+        _sans_font = "Microsoft YaHei" if sys.platform == "win32" else "Noto Sans CJK SC"
+        self.result_text.setFont(QFont(_sans_font, 9))
         right_layout.addWidget(QLabel("批改详情:"))
         right_layout.addWidget(self.result_text)
 
@@ -798,7 +800,9 @@ class MainWindow(QMainWindow):
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumHeight(150)
-        self.log_text.setFont(QFont("Consolas", 9))
+        # 等宽字体：Windows 用 Consolas，Linux 用 DejaVu Sans Mono
+        _mono_font = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
+        self.log_text.setFont(QFont(_mono_font, 9))
         right_layout.addWidget(QLabel("运行日志:"))
         right_layout.addWidget(self.log_text)
 
