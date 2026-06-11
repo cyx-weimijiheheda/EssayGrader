@@ -19,11 +19,11 @@ test/                 # PaddleOCR 识别测试套件
 ### 核心数据流
 
 ```
-图片文件夹 → [扫码] → [OCR] → [OCR修正(DeepSeek)] → [批改评分(DeepSeek)] → [升格范文(DeepSeek)] → 结果展示 → 导出JSON/DOCX
+图片文件夹 → [扫码] → [OCR] → [OCR修正(批改API)] → [批改评分(批改API)] → [升格范文(批改API)] → 结果展示 → 导出JSON/DOCX
               ↑                ↑                      ↑                       ↑
          条形码/二维码      多模式可选              安全分隔符包裹              可配置开关
                            Qwen/Ollama/            防提示词注入              分数/评语/改错/范文
-                           PaddleOCR
+                           PaddleOCR              OCR修正/OCR-only可选
 ```
 
 **关键细节**：
@@ -31,6 +31,8 @@ test/                 # PaddleOCR 识别测试套件
 - 批改阶段按高考标准评分：内容5 + 语言5 + 结构3 + 格式2 = 15分
 - 学生文本用安全分隔符 `✂️-STUDENT-ESSAY-START/END-✂️` 包裹，防止提示词注入
 - 升格范文保留学生核心内容和观点，只提升语言质量；若严重偏题则额外生成学习版范文
+- **OCR-only 模式**：勾选后仅执行 OCR 识别与修正，跳过批改评分和范文生成，结果列表用蓝色 `[OCR]` 标记
+- **批改 API 兼容**：`api_base` 可配置为任意 OpenAI 兼容接口（DeepSeek/OpenAI/本地 vLLM），模型名通过下拉框从 `/models` 拉取
 
 ## 关键文件说明
 
@@ -47,15 +49,18 @@ test/                 # PaddleOCR 识别测试套件
 1. SHA256 缓存检查 → 命中则跳过
 2. 条形码/二维码扫描（pyzbar + zxing-cpp 兜底）
 3. OCR 识别（4种模式可切换）
-4. OCR 修正（DeepSeek，可选）
-5. 批改评分（DeepSeek）
-6. 精修升格范文（DeepSeek，可选）
+4. OCR 修正（批改API，可选）
+5. 批改评分（批改API；OCR-only 模式则跳过）
+6. 精修升格范文（批改API，可选；OCR-only 模式则跳过）
 
 **关键设计决策**：
 - 本地 OCR（PaddleOCR）必须在主线程初始化，通过 `_prewarmed` 属性传给 worker，避免 QThread 内初始化导致 segfault
 - 重新批改时用 `tempfile.mkdtemp()` 创建临时目录，完成后清理
-- 所有 API 调用超时：Qwen/Ollama 60-1200s，DeepSeek 90s
+- 所有 API 调用超时：Qwen/Ollama 60-1200s，批改API 90s
 - Ollama 支持思考模型（`<think>` 标签自动剥离）
+- **结果状态**：每个结果 dict 含 `status` 字段（`success`/`ocr_only`/`ocr_failed`/`grading_failed`），UI 据此渲染颜色和横幅
+- **失败不缓存**：OCR 失败和批改失败的结果不写入缓存，允许修正配置后重试
+- **API Key 校验条件化**：OCR-only 且不勾选 OCR 修正时，无需批改 API Key
 
 ### `prompts.py` — 提示词模板
 
@@ -82,7 +87,10 @@ test/                 # PaddleOCR 识别测试套件
 **对话框设计**：
 - OCR 方式用 `QStackedWidget` 切换不同配置面板（PaddleOCR 无需配置，Qwen/Ollama 显示对应字段）
 - Ollama 模型下拉框支持手动输入 + 一键刷新列表（调用 `/api/tags`）
-- 11 个批改选项复选框，网格布局
+- 批改 API 模型下拉框同样支持可编辑 + 刷新（调用 `{api_base}/models`，OpenAI 兼容接口）
+- 批改 API 基地址可配置，支持任意 OpenAI 兼容接口
+- OCR-only 复选框独占一行，勾选时自动禁用「出具分数/生成评语/改错修正/升格范文」
+- 12 个批改选项复选框，网格布局
 
 ### `export_docx.py` — Word 导出
 

@@ -293,6 +293,7 @@ def export_to_docx(all_results: list, essay_title: str, filepath: str,
     for idx, entry in enumerate(all_results):
         result = entry.get("result", {})
 
+        status = result.get("status", "success")
         total = result.get("total_score", 0)
         content = result.get("content_score", 0)
         language = result.get("language_score", 0)
@@ -307,6 +308,8 @@ def export_to_docx(all_results: list, essay_title: str, filepath: str,
         student_class = result.get("student_class", "")
         barcode_data = result.get("barcode_data", "")
 
+        is_success = (status == "success")
+
         # ---- 节管理 ----
         if idx == 0:
             section = doc.sections[0]
@@ -320,26 +323,35 @@ def export_to_docx(all_results: list, essay_title: str, filepath: str,
         title = display_name
         if student_class:
             title += f" | {student_class}"
-        title += f"（得分：{total}/15分）"
+        if status == "ocr_only":
+            title += "（仅OCR识别，未批改）"
+        elif status in ("ocr_failed", "grading_failed"):
+            title += "（批改失败）"
+        else:
+            title += f"（得分：{total}/15分）"
         _add_heading(doc, title, level=1)
 
         # ---- 作文题目 ----
         _add_essay_title_line(doc, essay_title)
 
-        # 1. 评分详情
-        _add_score_table(doc, total, content, language, structure, fmt)
+        # 1. 评分详情（仅成功状态）
+        if is_success:
+            _add_score_table(doc, total, content, language, structure, fmt)
 
-        # 2. 评语
-        if comment:
+        # 2. 评语（失败时不重复显示错误作为评语）
+        if comment and is_success:
             _add_comment_section(doc, comment)
+        elif comment and not is_success:
+            _add_heading(doc, "错误信息", 2)
+            doc.add_paragraph(comment)
 
-        # 3. 修正版（含错误标注）
+        # 3. 修正版（含错误标注）— 仅成功状态
         if corrected:
             _add_corrected_section(doc, corrected)
-        elif errors:
+        elif errors and is_success:
             _add_error_fallback(doc, errors)
 
-        # 4. 精修升格范文
+        # 4. 精修升格范文 — 仅成功状态
         if polished:
             _add_polished_section(doc, polished)
 

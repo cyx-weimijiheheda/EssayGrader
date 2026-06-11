@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QSplitter, QPlainTextEdit
 )
 from PySide6.QtCore import QThread, Signal, Qt, QMutex, QMutexLocker, QTimer
-from PySide6.QtGui import QFont, QAction
+from PySide6.QtGui import QFont, QAction, QColor
 
 import requests
 
@@ -419,13 +419,19 @@ class GraderWorker(QThread):
     # ---- DeepSeek API 调用 ----
 
     def _call_deepseek(self, system_prompt: str, user_content: str, max_tokens: int = 2000) -> dict:
-        """通用DeepSeek API调用"""
+        """通用批改API调用（OpenAI兼容接口）"""
+        import requests as req_lib
+
+        api_base = self.config.get("api_base", "https://api.deepseek.com/v1").rstrip("/")
+        api_key = self.config.get("deepseek_api_key", "")
+        model = self.config.get("deepseek_model", "deepseek-chat")
+
         headers = {
-            "Authorization": f"Bearer {self.config.get('deepseek_api_key', '')}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         payload = {
-            "model": self.config.get("deepseek_model", "deepseek-chat"),
+            "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content}
@@ -433,21 +439,53 @@ class GraderWorker(QThread):
             "temperature": 0.3,
             "max_tokens": max_tokens
         }
-        api_url = "https://api.deepseek.com/v1/chat/completions"
+        api_url = f"{api_base}/chat/completions"
+
+        # --- 发起请求，分类处理异常 ---
+        response = None
         try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=90)
-            response.raise_for_status()
-        except requests.exceptions.RequestException:
-            raise Exception(f"DeepSeek API 请求失败:\n{traceback.format_exc()}")
-        except Exception:
+            response = req_lib.post(api_url, headers=headers, json=payload, timeout=90)
+        except req_lib.exceptions.Timeout:
+            raise Exception("批改API连接超时（90秒），请检查网络或稍后重试")
+        except req_lib.exceptions.ConnectionError:
+            raise Exception(f"网络连接失败，无法访问批改API（{api_base}），请检查网络设置")
+
+        # HTTP 状态码分类处理
+        if response.status_code == 401:
+            raise Exception("批改API Key 无效或被拒，请在设置中重新配置")
+        elif response.status_code == 402:
+            raise Exception("批改API 账户余额不足，请充值")
+        elif response.status_code == 404:
+            raise Exception(f"批改API 模型不存在（{model}），请检查设置中的模型名称")
+        elif response.status_code == 429:
+            raise Exception("批改API 请求过于频繁，请稍后重试")
+        elif response.status_code >= 500:
+            detail = ""
+            try:
+                detail = response.text[:300]
+            except Exception:
+                pass
+            raise Exception(f"批改API 服务端错误（HTTP {response.status_code}），请稍后重试\n{detail}")
+        elif response.status_code != 200:
             detail = ""
             try:
                 detail = response.text[:500]
             except Exception:
                 pass
-            raise Exception(f"DeepSeek API 返回异常 (HTTP {getattr(response, 'status_code', '?')}):\n{detail}\n{traceback.format_exc()}")
-        result = response.json()
-        content = result["choices"][0]["message"]["content"]
+            raise Exception(f"批改API 返回异常（HTTP {response.status_code}）\n{detail}")
+
+        # HTTP 200 — 解析响应体
+        try:
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            raw = ""
+            try:
+                raw = response.text[:500]
+            except Exception:
+                pass
+            raise Exception(f"批改API 返回格式异常（{e}），请重试\n原始响应: {raw}")
+
         return _parse_json_response(content)
 
     def _call_ocr_correction(self, ocr_text: str) -> dict:
@@ -511,8 +549,9 @@ class GraderWorker(QThread):
 
     # ---- 错误结果构造 ----
 
-    def _make_error_result(self, error_msg: str, ocr_text: str = "") -> dict:
+    def _make_error_result(self, error_msg: str, ocr_text: str = "", status: str = "grading_failed") -> dict:
         return {
+            "status": status,
             "ocr_corrected_text": ocr_text,
             "total_score": 0,
             "content_score": 0,
@@ -619,7 +658,7 @@ class GraderWorker(QThread):
                 traceback.print_exc()
                 tb = traceback.format_exc()
                 self.log_updated.emit(f"  - OCR失败:\n{tb}")
-                self.result_ready.emit(filename, self._make_error_result(f"OCR识别失败:\n{tb}"))
+                self.result_ready.emit(filename, self._make_error_result(f"OCR识别失败:\n{tb}", status="ocr_failed"))
                 continue
 
             # ---- 步骤4：OCR修正（可选） ----
@@ -651,7 +690,33 @@ class GraderWorker(QThread):
                 correction_result = {"ocr_corrected_text": ocr_text}
                 self.log_updated.emit("  - 跳过OCR修正阶段")
 
-            # ---- 步骤5：批改评分 ----
+            # ---- 步骤5：批改评分 / OCR-only 跳过 ----
+            ocr_only = self.config.get("ocr_only", False)
+            if ocr_only:
+                self.log_updated.emit("  - OCR-only 模式，跳过批改评分")
+                combined = {
+                    "status": "ocr_only",
+                    "ocr_corrected_text": correction_result.get("ocr_corrected_text", ocr_text),
+                    "total_score": 0,
+                    "content_score": 0,
+                    "language_score": 0,
+                    "structure_score": 0,
+                    "format_score": 0,
+                    "errors": [],
+                    "ocr_suspicions": [],
+                    "comment": "",
+                    "corrected_version": "",
+                    "polished_version": "",
+                    "learning_version": "",
+                    "student_name": student_name,
+                    "student_class": student_class,
+                    "barcode_data": barcode_data
+                }
+                self.result_ready.emit(filename, combined)
+                self.cache.mark_graded(barcode_data, student_name, student_class,
+                                       self.image_folder, filename, image_path, combined)
+                continue
+
             try:
                 self.log_updated.emit("  - DeepSeek批改评分中...")
                 grading_result = self._call_grading(text_for_grading)
@@ -661,7 +726,7 @@ class GraderWorker(QThread):
                 traceback.print_exc()
                 tb = traceback.format_exc()
                 self.log_updated.emit(f"  - 批改失败:\n{tb}")
-                error_result = self._make_error_result(f"DeepSeek批改失败:\n{tb}", text_for_grading)
+                error_result = self._make_error_result(f"批改失败:\n{tb}", text_for_grading, status="grading_failed")
                 error_result["student_name"] = student_name
                 error_result["student_class"] = student_class
                 error_result["barcode_data"] = barcode_data
@@ -687,6 +752,7 @@ class GraderWorker(QThread):
 
             # ---- 合并结果 ----
             combined = {
+                "status": "success",
                 "ocr_corrected_text": correction_result.get("ocr_corrected_text", ocr_text),
                 "total_score": grading_result.get("total_score", 0),
                 "content_score": grading_result.get("content_score", 0),
@@ -913,11 +979,14 @@ class MainWindow(QMainWindow):
                 return
         # paddleocr / ollama 不需要API Key
 
-        if not config.get("deepseek_api_key", ""):
-            QMessageBox.warning(self, "错误", "请在 文件→设置 中配置DeepSeek API Key")
-            return
         if not self.essay_title.toPlainText():
             QMessageBox.warning(self, "错误", "请输入作文题目")
+            return
+
+        # 仅当需要批改或OCR修正时才校验API Key
+        need_api = not config.get("ocr_only", False) or config.get("ocr_correction", True)
+        if need_api and not config.get("deepseek_api_key", ""):
+            QMessageBox.warning(self, "错误", "请在 文件→设置 中配置批改API Key")
             return
 
         self.save_main_fields()
@@ -1002,13 +1071,35 @@ class MainWindow(QMainWindow):
 
     def on_result_ready(self, filename, result):
         self.all_results.append({"filename": filename, "result": result})
+        status = result.get("status", "success")
         total_score = result.get("total_score", 0)
         student_name = result.get("student_name", "")
-        label = f"{filename}"
+
+        # 根据状态构建列表标签
+        if status == "ocr_failed":
+            prefix = "[失败] "
+        elif status == "grading_failed":
+            prefix = "[失败] "
+        elif status == "ocr_only":
+            prefix = "[OCR] "
+        else:
+            prefix = ""
+
+        score_str = f"{total_score}/15" if status == "success" else ""
+        label = f"{prefix}{filename}"
         if student_name:
             label += f"  [{student_name}]"
-        label += f"  {total_score}/15"
+        if score_str:
+            label += f"  {score_str}"
+
         item = QListWidgetItem(label)
+
+        # 颜色编码
+        if status in ("ocr_failed", "grading_failed"):
+            item.setForeground(QColor("red"))
+        elif status == "ocr_only":
+            item.setForeground(QColor("#0077CC"))  # 蓝色
+
         self.file_list.addItem(item)
 
     def on_list_selected(self, index):
@@ -1071,16 +1162,37 @@ class MainWindow(QMainWindow):
     def on_regrade_result_ready(self, filename, result):
         """重新批改的结果插入到列表首位"""
         self.all_results.insert(0, {"filename": filename, "result": result})
+        status = result.get("status", "success")
         total_score = result.get("total_score", 0)
         student_name = result.get("student_name", "")
-        label = f"{filename}"
+
+        if status == "ocr_failed":
+            prefix = "[失败] "
+        elif status == "grading_failed":
+            prefix = "[失败] "
+        elif status == "ocr_only":
+            prefix = "[OCR] "
+        else:
+            prefix = ""
+
+        score_str = f"{total_score}/15" if status == "success" else ""
+        label = f"{prefix}{filename}"
         if student_name:
             label += f"  [{student_name}]"
-        label += f"  {total_score}/15"
-        self.file_list.insertItem(0, label)
+        if score_str:
+            label += f"  {score_str}"
+
+        item = QListWidgetItem(label)
+        if status in ("ocr_failed", "grading_failed"):
+            item.setForeground(QColor("red"))
+        elif status == "ocr_only":
+            item.setForeground(QColor("#0077CC"))
+
+        self.file_list.insertItem(0, item)
         self.file_list.setCurrentRow(0)
 
     def display_result(self, result):
+        status = result.get("status", "success")
         total = result.get("total_score", 0)
         content = result.get("content_score", 0)
         language = result.get("language_score", 0)
@@ -1096,6 +1208,19 @@ class MainWindow(QMainWindow):
         student_class = result.get("student_class", "")
         barcode_data = result.get("barcode_data", "")
 
+        html = ""
+
+        # 状态横幅
+        if status == "ocr_failed":
+            html += "<p style='padding:8px;background:#FFE4E4;border-left:4px solid red;margin:4px 0;'>"
+            html += "<b style='color:red;'>⚠ OCR 识别失败</b> — 请检查图片质量和 OCR 配置</p>"
+        elif status == "grading_failed":
+            html += "<p style='padding:8px;background:#FFE4E4;border-left:4px solid red;margin:4px 0;'>"
+            html += "<b style='color:red;'>⚠ 批改失败</b> — 请检查 API 配置和网络连接</p>"
+        elif status == "ocr_only":
+            html += "<p style='padding:8px;background:#E4F0FF;border-left:4px solid #0077CC;margin:4px 0;'>"
+            html += "<b style='color:#0077CC;'>📝 仅 OCR 识别（未批改）</b></p>"
+
         # 学生信息行
         info_parts = []
         if student_name:
@@ -1104,48 +1229,54 @@ class MainWindow(QMainWindow):
             info_parts.append(f"班级：{student_class}")
         if barcode_data:
             info_parts.append(f"条码：{barcode_data}")
-        info_html = ""
         if info_parts:
-            info_html = "<p><b>" + "&nbsp;&nbsp;|&nbsp;&nbsp;".join(info_parts) + "</b></p><hr>"
+            html += "<p><b>" + "&nbsp;&nbsp;|&nbsp;&nbsp;".join(info_parts) + "</b></p><hr>"
 
-        html = f"""
-        <p style='font-size:14px;font-weight:bold;margin:4px 0;'>评分详情</p>
-        {info_html}
-        <table border="0" cellpadding="3">
-        <tr><td><b>总分：</b></td><td><span style='color:red;font-size:16px;font-weight:bold;'>{total}</span> / 15</td></tr>
-        <tr><td>内容要点：</td><td>{content}/5</td></tr>
-        <tr><td>语言质量：</td><td>{language}/5</td></tr>
-        <tr><td>篇章结构：</td><td>{structure}/3</td></tr>
-        <tr><td>格式与语体：</td><td>{fmt}/2</td></tr>
-        </table>
-        """
+        # 评分表（仅成功状态下显示）
+        if status == "success":
+            html += "<p style='font-size:14px;font-weight:bold;margin:4px 0;'>评分详情</p>"
+            html += "<table border='0' cellpadding='3'>"
+            html += f"<tr><td><b>总分：</b></td><td><span style='color:red;font-size:16px;font-weight:bold;'>{total}</span> / 15</td></tr>"
+            html += f"<tr><td>内容要点：</td><td>{content}/5</td></tr>"
+            html += f"<tr><td>语言质量：</td><td>{language}/5</td></tr>"
+            html += f"<tr><td>篇章结构：</td><td>{structure}/3</td></tr>"
+            html += f"<tr><td>格式与语体：</td><td>{fmt}/2</td></tr>"
+            html += "</table>"
 
+        # 错误列表
         if errors:
-            html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>错误分析：</p><ul>"
+            is_error_result = status in ("ocr_failed", "grading_failed")
+            section_title = "错误信息：" if is_error_result else "错误分析："
+            html += f"<p style='font-size:12px;font-weight:bold;margin:4px 0;'>{section_title}</p><ul>"
             for err in errors:
                 html += f"<li>{err}</li>"
             html += "</ul>"
 
+        # OCR 可疑识别
         if ocr_suspicions:
             html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>OCR可疑识别：</p><ul>"
             for sus in ocr_suspicions:
                 html += f"<li>{sus}</li>"
             html += "</ul>"
 
-        if comment:
+        # 评语
+        if comment and status != "grading_failed":
             html += f"<p style='font-size:12px;font-weight:bold;margin:4px 0;'>评语：</p><p style='line-height:1.5;'>{comment}</p>"
 
+        # OCR修正版
         if ocr_corrected:
             html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>OCR修正版：</p>"
             html += f"<pre style='padding:6px; border-radius:5px; white-space:pre-wrap; line-height:1.5;'>{ocr_corrected}</pre>"
 
+        # 改错修正版
         if corrected:
             rendered = render_inline_errors(corrected)
             html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>修正版（含错误标注）：</p>"
             html += f"<div style='padding:8px; border-radius:5px; line-height:1.6;'>{rendered}</div>"
-        elif errors:
+        elif errors and status == "success":
             html += "<p><i>（本次未生成改错修正版）</i></p>"
 
+        # 升格范文
         if polished:
             html += "<p style='font-size:12px;font-weight:bold;margin:4px 0;'>精修升格范文：</p>"
             html += f"<div style='padding:8px; border-radius:5px; line-height:1.5; border-left:4px solid #4A90D9;'>{polished}</div>"
@@ -1170,7 +1301,17 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
         if self.all_results:
-            self.append_log(f"全部批改完成！共 {len(self.all_results)} 篇作文")
+            success_count = sum(1 for r in self.all_results if r["result"].get("status") == "success")
+            ocr_only_count = sum(1 for r in self.all_results if r["result"].get("status") == "ocr_only")
+            failed_count = sum(1 for r in self.all_results if r["result"].get("status") in ("ocr_failed", "grading_failed"))
+            parts = []
+            if success_count:
+                parts.append(f"{success_count} 篇成功")
+            if ocr_only_count:
+                parts.append(f"{ocr_only_count} 篇仅OCR")
+            if failed_count:
+                parts.append(f"{failed_count} 篇失败")
+            self.append_log(f"批改任务完成！共 {len(self.all_results)} 篇 — {'，'.join(parts)}")
         if self.file_list.currentRow() >= 0:
             self.regrade_btn.setVisible(True)
 

@@ -84,6 +84,7 @@ def _migrate_config(config: dict) -> dict:
 # ==================== 扁平配置 ====================
 
 DEFAULT_CONFIG = {
+    "api_base": "https://api.deepseek.com/v1",
     "deepseek_api_key": "",
     "deepseek_model": "deepseek-chat",
     "qwen_api_key": "",
@@ -101,6 +102,7 @@ DEFAULT_CONFIG = {
     "with_comment": True,
     "with_correction": True,
     "ocr_correction": True,
+    "ocr_only": False,
     "skip_duplicates": True,
     "with_polish": True,
     "two_pages_per_student": True,
@@ -172,18 +174,33 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
-        # DeepSeek API
-        ds_group = QGroupBox("DeepSeek API 配置（批改评分用）")
+        # 批改 API 配置（OpenAI 兼容接口）
+        ds_group = QGroupBox("批改 API 配置（OpenAI 兼容接口）")
         ds_layout = QFormLayout(ds_group)
+
+        self.api_base = QLineEdit()
+        self.api_base.setPlaceholderText("https://api.deepseek.com/v1")
+        ds_layout.addRow("API 基地址:", self.api_base)
 
         self.ds_api_key = QLineEdit()
         self.ds_api_key.setEchoMode(QLineEdit.Password)
         self.ds_api_key.setPlaceholderText("sk-...")
         ds_layout.addRow("API Key:", self.ds_api_key)
 
-        self.ds_model = QLineEdit()
-        self.ds_model.setPlaceholderText("deepseek-chat")
-        ds_layout.addRow("模型名称:", self.ds_model)
+        # 模型下拉框 + 刷新按钮
+        model_row = QHBoxLayout()
+        self.ds_model = QComboBox()
+        self.ds_model.setEditable(True)
+        self.ds_model.setPlaceholderText("点击刷新获取模型列表...")
+        self.ds_model.setMinimumWidth(200)
+        model_row.addWidget(self.ds_model, 1)
+        self.ds_refresh_btn = QPushButton("刷新模型列表")
+        self.ds_refresh_btn.clicked.connect(self._refresh_ds_models)
+        model_row.addWidget(self.ds_refresh_btn)
+        ds_layout.addRow("模型名称:", model_row)
+
+        self.ds_status = QLabel("")
+        ds_layout.addRow("", self.ds_status)
 
         layout.addWidget(ds_group)
 
@@ -293,6 +310,12 @@ class SettingsDialog(QDialog):
         self.chk_detect_class = QCheckBox("识别学生班级")
         self.chk_detect_class.setToolTip("OCR 自动提取")
 
+        # OCR-only 独占行（触发时自动禁用冲突的批改选项）
+        self.chk_ocr_only = QCheckBox("仅 OCR 识别（跳过批改评分、范文生成）")
+        self.chk_ocr_only.setToolTip("勾选后仅执行 OCR 识别与修正，自动跳过批改评分。适用于只需提取文本的场景。")
+        self.chk_ocr_only.toggled.connect(self._on_ocr_only_toggled)
+        grading_layout.addWidget(self.chk_ocr_only)
+
         grid = QGridLayout()
         grid.setSpacing(4)
         grid.addWidget(self.chk_score, 0, 0)
@@ -340,6 +363,41 @@ class SettingsDialog(QDialog):
         if index == 2:  # ollama
             self._refresh_ollama_models()
 
+    def _refresh_ds_models(self):
+        """从 OpenAI 兼容 API 拉取可用模型列表"""
+        import requests
+        api_base = self.api_base.text().strip().rstrip("/")
+        if not api_base:
+            self.ds_status.setText("请先填写 API 基地址")
+            return
+        api_key = self.ds_api_key.text().strip()
+        url = f"{api_base}/models"
+        current = self.ds_model.currentText()
+        self.ds_model.clear()
+        self.ds_status.setText("正在获取模型列表...")
+        self.log_message.emit(f"正在获取模型列表 ({url})...")
+        try:
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            models = data.get("data", [])
+            names = sorted([m["id"] for m in models if "id" in m])
+            self.ds_model.addItems(names)
+            if current:
+                idx = self.ds_model.findText(current)
+                if idx >= 0:
+                    self.ds_model.setCurrentIndex(idx)
+                else:
+                    self.ds_model.setCurrentText(current)
+            self.ds_status.setText(f"共 {len(names)} 个模型")
+            self.log_message.emit(f"获取到 {len(names)} 个模型")
+        except Exception as e:
+            self.ds_status.setText(f"获取失败: {e}")
+            self.log_message.emit(f"获取模型列表失败: {e}")
+            if current:
+                self.ds_model.setCurrentText(current)
+
     def _refresh_ollama_models(self):
         """从 Ollama 服务器拉取可用模型列表"""
         import requests
@@ -370,9 +428,18 @@ class SettingsDialog(QDialog):
             if current:
                 self.ol_model.setCurrentText(current)
 
+    def _on_ocr_only_toggled(self, checked):
+        """OCR-only 模式勾选时，自动禁用冲突的批改选项"""
+        # 冲突的选项：分数、评语、改错、范文——OCR-only 模式下不执行批改
+        self.chk_score.setEnabled(not checked)
+        self.chk_comment.setEnabled(not checked)
+        self.chk_correction.setEnabled(not checked)
+        self.chk_polish.setEnabled(not checked)
+
     def load_ui_from_config(self):
+        self.api_base.setText(self.config.get("api_base", "https://api.deepseek.com/v1"))
         self.ds_api_key.setText(self.config.get("deepseek_api_key", ""))
-        self.ds_model.setText(self.config.get("deepseek_model", "deepseek-chat"))
+        self.ds_model.setCurrentText(self.config.get("deepseek_model", "deepseek-chat"))
 
         self.qw_api_key.setText(self.config.get("qwen_api_key", ""))
         self.qw_model.setText(self.config.get("qwen_model", "qwen-vl-max"))
@@ -396,6 +463,10 @@ class SettingsDialog(QDialog):
         self.chk_ocr_correction.setChecked(self.config.get("ocr_correction", True))
         self.chk_skip_duplicates.setChecked(self.config.get("skip_duplicates", True))
         self.chk_polish.setChecked(self.config.get("with_polish", True))
+        self.chk_ocr_only.setChecked(self.config.get("ocr_only", False))
+
+        # 应用 OCR-only 的禁用状态
+        self._on_ocr_only_toggled(self.config.get("ocr_only", False))
         self.chk_two_pages.setChecked(self.config.get("two_pages_per_student", True))
         self.chk_detect_barcode.setChecked(self.config.get("detect_barcode", True))
         self.chk_detect_name.setChecked(self.config.get("detect_name", True))
@@ -404,8 +475,9 @@ class SettingsDialog(QDialog):
         self.extra_requirements.setPlainText(self.config.get("extra_requirements", ""))
 
     def on_save(self):
+        self.config["api_base"] = self.api_base.text().strip().rstrip("/") or "https://api.deepseek.com/v1"
         self.config["deepseek_api_key"] = self.ds_api_key.text().strip()
-        self.config["deepseek_model"] = self.ds_model.text().strip() or "deepseek-chat"
+        self.config["deepseek_model"] = self.ds_model.currentText().strip() or "deepseek-chat"
 
         self.config["qwen_api_key"] = self.qw_api_key.text().strip()
         self.config["qwen_model"] = self.qw_model.text().strip() or "qwen-vl-max"
@@ -424,6 +496,7 @@ class SettingsDialog(QDialog):
         self.config["with_comment"] = self.chk_comment.isChecked()
         self.config["with_correction"] = self.chk_correction.isChecked()
         self.config["ocr_correction"] = self.chk_ocr_correction.isChecked()
+        self.config["ocr_only"] = self.chk_ocr_only.isChecked()
         self.config["skip_duplicates"] = self.chk_skip_duplicates.isChecked()
         self.config["with_polish"] = self.chk_polish.isChecked()
         self.config["two_pages_per_student"] = self.chk_two_pages.isChecked()
